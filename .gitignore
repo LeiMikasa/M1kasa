@@ -1,0 +1,40 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+target/
+build/
+coverage/
+.cache/
+
+# IDE and machine-specific files
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+Thumbs.db
+.openai/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+**/src/main/resources/application.yaml
+**/src/main/resources/application.yml
+application-local.yaml
+application-local.yml
+application-local.properties
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Logs, crash dumps, and test artifacts
+*.log
+hs_err_pid*
+replay_pid*
+test-results/
+playwright-report/
+blob-report/

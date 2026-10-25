@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: m1kasa-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      database: 0
+      password: ${REDIS_PASSWORD}
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: user-service
+              uri: http://localhost:8081
+              predicates:
+                - Path=/user/**
+            - id: shop-service
+              uri: http://localhost:8082
+              predicates:
+                - Path=/shop/**,/shop-type/**
+            - id: voucher-service
+              uri: http://localhost:8083
+              predicates:
+                - Path=/voucher/**
