@@ -21,6 +21,8 @@ import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+
 @Service
 public class VoucherServiceImpl implements VoucherService {
 
@@ -210,13 +212,16 @@ public class VoucherServiceImpl implements VoucherService {
           if (userId ==null || userId<=0){
               throw new IllegalArgumentException("用户ID不合法");
           }
+          String requestId= UUID.randomUUID().toString();
           Long result=stringRedisTemplate.execute(
                   RESERVE_SCRIPT,
                   List.of(
                           SeckillRedisKeys.activity(voucherId),
-                          SeckillRedisKeys.buyers(voucherId)
+                          SeckillRedisKeys.buyers(voucherId),
+                          SeckillRedisKeys.outbox(voucherId)
                   ),
-                  userId.toString()
+                  userId.toString(),
+                  requestId
           );
           if (result==null){
               throw new IllegalStateException("抢劵脚本未返回结果");

@@ -2,6 +2,8 @@
 -- KEYS[1]: 活动信息Hash
 -- KEYS[2]: 已获得资格的用户 Set
 -- ARGV[1]: 当前用户ID
+-- KEYS[3]：待发送记录 Hash
+-- ARGV[2]：本次抢券请求 ID
 
 -- 返回值:
 -- 0:获得资格
@@ -15,6 +17,19 @@ local activityKey = KEYS[1]
 local buyersKey = KEYS[2]
 local userId = ARGV[1]
 
+local outboxKey = KEYS[3]
+local requestId = ARGV[2]
+
+if not requestId or requestId == '' then
+    return 5
+end
+
+-- 提前检查待发送记录的类型，避免写入时发生 WRONGTYPE
+local outboxType = redis.call('TYPE', outboxKey).ok
+
+if outboxType ~= 'none' and outboxType ~= 'hash' then
+    return 5
+end
 -- 1.读取活动消息
 local activity = redis.call(
     'HMGET', activityKey,
@@ -51,7 +66,13 @@ if stock <= 0 then
 end
 
 -- 5. 扣减库存，并记录用户
+-- 扣减库存
 redis.call('HINCRBY', activityKey, 'stock', -1)
+
+-- 记录已经获得资格的用户
 redis.call('SADD', buyersKey, userId)
+
+-- 保存待发送的下单消息记录
+redis.call('HSET', outboxKey, requestId, userId)
 
 return 0
