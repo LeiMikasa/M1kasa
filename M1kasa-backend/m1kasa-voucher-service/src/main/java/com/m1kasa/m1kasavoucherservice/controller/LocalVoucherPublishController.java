@@ -29,4 +29,12 @@ public class LocalVoucherPublishController {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(Result.ok(voucherId));
     }
+    @PostMapping("/seckill/{voucherId}/init")
+    public ResponseEntity<Result<Boolean>> initializeSeckillActivity(
+            @PathVariable("voucherId") Long voucherId
+    ){
+        boolean initialized=
+                voucherService.initializeSeckillActivity(voucherId);
+        return ResponseEntity.ok(Result.ok(initialized));
+    }
 }

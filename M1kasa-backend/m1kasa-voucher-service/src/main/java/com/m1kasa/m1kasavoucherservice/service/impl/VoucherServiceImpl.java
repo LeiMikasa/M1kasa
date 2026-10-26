@@ -1,17 +1,23 @@
 package com.m1kasa.m1kasavoucherservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.m1kasa.m1kasavoucherservice.constant.SeckillRedisKeys;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillVoucher;
 import com.m1kasa.m1kasavoucherservice.entity.Voucher;
+import com.m1kasa.m1kasavoucherservice.enums.SeckillReserveStatus;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillVoucherMapper;
 import com.m1kasa.m1kasavoucherservice.mapper.VoucherMapper;
 import com.m1kasa.m1kasavoucherservice.service.VoucherService;
 import com.m1kasa.m1kasavoucherservice.web.SeckillVoucherCreateRequest;
 import com.m1kasa.voucher.api.VoucherDTO;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,10 +26,25 @@ public class VoucherServiceImpl implements VoucherService {
 
     private final VoucherMapper voucherMapper;
     private final SeckillVoucherMapper seckillVoucherMapper;
+    private final StringRedisTemplate stringRedisTemplate;
+    private static final ZoneId SECKILL_ZONE=ZoneId.of("Asia/Shanghai");
+    private static final DefaultRedisScript<Long> INIT_SCRIPT=new DefaultRedisScript<>();
+    private static final DefaultRedisScript<Long> RESERVE_SCRIPT=new DefaultRedisScript<>();
+    static {
+        INIT_SCRIPT.setLocation(
+                new ClassPathResource("lua/seckill_init_lua.lua")
+        );
+        INIT_SCRIPT.setResultType(Long.class);
 
-    public VoucherServiceImpl(VoucherMapper voucherMapper, SeckillVoucherMapper seckillVoucherMapper) {
+        RESERVE_SCRIPT.setLocation(
+                new ClassPathResource("lua/seckill_reserve.lua")
+        );
+        RESERVE_SCRIPT.setResultType(Long.class);
+    }
+    public VoucherServiceImpl(VoucherMapper voucherMapper, SeckillVoucherMapper seckillVoucherMapper, StringRedisTemplate stringRedisTemplate) {
         this.voucherMapper = voucherMapper;
         this.seckillVoucherMapper = seckillVoucherMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     @Override
@@ -126,6 +147,91 @@ public class VoucherServiceImpl implements VoucherService {
         }
 
         return voucherId;
+    }
+
+    @Override
+    public boolean initializeSeckillActivity(Long voucherId) {
+      if (voucherId==null || voucherId<=0){
+          throw new IllegalArgumentException("优惠劵ID必须大于0");
+      }
+      Voucher voucher = voucherMapper.selectById(voucherId);
+      if (voucher==null){
+          throw new IllegalArgumentException("优惠劵不存在");
+      }
+      if (!Integer.valueOf(1).equals(voucher.getType())
+              || !Integer.valueOf(1).equals(voucher.getStatus())){
+          throw new IllegalArgumentException("只能预热上架的秒杀劵");
+      }
+      SeckillVoucher seckillVoucher=seckillVoucherMapper.selectById(voucherId);
+      if (seckillVoucher==null){
+          throw new IllegalArgumentException("秒杀信息不存在");
+      }
+      if (seckillVoucher.getStock() == null || seckillVoucher.getStock()<0
+      || seckillVoucher.getBeginTime() == null || seckillVoucher.getEndTime() == null){
+          throw new IllegalArgumentException("秒杀活动信息不完整");
+      }
+
+      //数据库中的活动时间按北京时间解释
+      long beginMillis=seckillVoucher.getBeginTime()
+              .atZone(SECKILL_ZONE)
+              .toInstant()
+              .toEpochMilli();
+      long endMillis = seckillVoucher.getEndTime()
+              .atZone(SECKILL_ZONE)
+              .toInstant()
+              .toEpochMilli();
+
+      if (endMillis <= beginMillis) {
+          throw new IllegalArgumentException("结束时间必须晚于开始时间");
+      }
+
+      if (System.currentTimeMillis() >= beginMillis) {
+          throw new IllegalArgumentException("必须在活动开始前完成预热");
+      }
+      Long result = stringRedisTemplate.execute(
+              INIT_SCRIPT,
+              List.of(SeckillRedisKeys.activity(voucherId)),
+              seckillVoucher.getStock().toString(),
+              Long.toString(beginMillis),
+              Long.toString(endMillis)
+      );
+      if (result==null){
+          throw new IllegalArgumentException("Redis 初始化未返回结果");
+      }
+      return Long.valueOf(1).equals(result);
+    }
+
+
+    @Override
+    public SeckillReserveStatus reserveSeckill(Long voucherId, Long userId) {
+          if (voucherId==null || voucherId<=0){
+              throw new IllegalArgumentException("优惠劵ID不合法");
+          }
+          if (userId ==null || userId<=0){
+              throw new IllegalArgumentException("用户ID不合法");
+          }
+          Long result=stringRedisTemplate.execute(
+                  RESERVE_SCRIPT,
+                  List.of(
+                          SeckillRedisKeys.activity(voucherId),
+                          SeckillRedisKeys.buyers(voucherId)
+                  ),
+                  userId.toString()
+          );
+          if (result==null){
+              throw new IllegalStateException("抢劵脚本未返回结果");
+          }
+          return switch (Math.toIntExact(result)){
+              case 0->SeckillReserveStatus.RESERVED;
+              case 1->SeckillReserveStatus.SOLD_OUT;
+              case 2->SeckillReserveStatus.DUPLICATE;
+              case 3 -> SeckillReserveStatus.NOT_STARTED;
+              case 4 -> SeckillReserveStatus.ENDED;
+              case 5 -> SeckillReserveStatus.NOT_INITIALIZED;
+              default -> throw new IllegalStateException(
+                      "抢券脚本返回了未知结果：" + result
+              );
+          };
     }
 
     private VoucherDTO toDTO(
