@@ -295,6 +295,28 @@
 .voucher-rules { margin:0 0 23px; white-space:pre-wrap; overflow-wrap:anywhere; color:#cdbabb; font-size:12px; line-height:1.9; }
 .login-link { display:flex; align-items:center; justify-content:center; gap:5px; width:100%; margin-top:20px; color:var(--coral)!important; font-size:11px; }
 .login-link svg { width:14px; height:14px; }
+.seckill-purchase { margin-top:22px; }
+.seckill-purchase .checkout-note { margin-bottom:18px; }
+.reservation-message { padding:16px; margin:0 0 16px; border:1px solid #785659; border-radius:12px; background:#35272b; }
+.reservation-message strong { display:block; color:#f2d3b7; font-size:13px; line-height:1.7; }
+.reservation-message p,.live-order-card > p { margin:7px 0 0; color:#cdbabb; font-size:11px; line-height:1.9; overflow-wrap:anywhere; }
+.reservation-message .outline-button { margin-top:12px; }
+.reservation-error { margin:0 0 14px; color:#ffb1a6; font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.order-lookup { margin-top:16px; text-align:center; }
+.order-lookup > p { margin:0 0 12px; color:var(--muted); font-size:11px; line-height:1.9; overflow-wrap:anywhere; }
+.order-lookup > .reservation-error { color:#ffb1a6; }
+.reservation-retry { margin-top:22px; padding-top:16px; border-top:1px solid var(--line); text-align:center; }
+.reservation-retry p { margin:0 0 12px; color:var(--muted); font-size:11px; line-height:1.9; }
+.live-order-card { padding:18px; border:1px solid #766443; border-radius:13px; background:#302a24; }
+.live-order-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.live-order-heading > span { display:flex; align-items:center; gap:6px; font-size:14px; color:#f3d9ad; }
+.live-order-heading svg { width:17px; height:17px; }
+.live-order-heading em { padding:4px 8px; border-radius:6px; background:#514434; color:#efc48c; font-size:10px; font-style:normal; white-space:nowrap; }
+.live-order-card dl { margin:17px 0 0; }
+.live-order-card dl > div { display:flex; justify-content:space-between; gap:14px; padding:11px 0; border-top:1px solid #514238; font-size:11px; line-height:1.7; }
+.live-order-card dt { flex:none; color:#bba99d; }
+.live-order-card dd { min-width:0; margin:0; text-align:right; color:#f2e3d7; overflow-wrap:anywhere; }
+.live-order-card > .outline-button { margin-top:16px; }
 .login-body { padding:35px 25px 32px; }
 .login-body h1 { margin:10px 0 8px; font:600 32px/1.4 'Noto Serif SC',serif; }
 .login-body > p { color:var(--muted); font-size:12px; line-height:1.8; }

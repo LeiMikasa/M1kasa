@@ -21,6 +21,8 @@
         <module>m1kasa-gateway</module>
         <module>m1kasa-voucher-service</module>
         <module>m1kasa-voucher-api</module>
+        <module>m1kasa-order-service</module>
+        <module>m1kasa-order-api</module>
     </modules>
 
     <properties>
