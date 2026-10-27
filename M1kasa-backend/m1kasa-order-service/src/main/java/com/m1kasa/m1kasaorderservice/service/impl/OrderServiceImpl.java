@@ -5,6 +5,7 @@ import com.m1kasa.m1kasaorderservice.constant.OrderStatus;
 import com.m1kasa.m1kasaorderservice.entity.VoucherOrder;
 import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
 import com.m1kasa.m1kasaorderservice.service.OrderService;
+import com.m1kasa.m1kasaorderservice.service.SeckillOrderWriter;
 import com.m1kasa.voucher.api.message.SeckillOrderCreateMessage;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -15,32 +16,24 @@ import java.time.LocalDateTime;
 @Service
 public class OrderServiceImpl implements OrderService {
     private final VoucherOrderMapper voucherOrderMapper;
-
-    public OrderServiceImpl(VoucherOrderMapper voucherOrderMapper) {
+    private final SeckillOrderWriter seckillOrderWriter;
+    public OrderServiceImpl(VoucherOrderMapper voucherOrderMapper, SeckillOrderWriter seckillOrderWriter) {
         this.voucherOrderMapper = voucherOrderMapper;
+        this.seckillOrderWriter = seckillOrderWriter;
     }
 
     @Override
-    public Long createSeckillOrder(SeckillOrderCreateMessage message) {
-          validateMessage(message);
-          VoucherOrder order=new VoucherOrder();
-          order.setRequestId(message.requestId());
-          order.setUserId(message.userId());
-          order.setVoucherId(message.voucherId());
-          order.setStatus(OrderStatus.WAITING_PAYMENT);
+    public Long createSeckillOrder(
+            SeckillOrderCreateMessage message
+    ) {
+        validateMessage(message);
 
-          LocalDateTime now=LocalDateTime.now();
-          order.setCreateTime(now);
-          order.setUpdateTime(now);
-
-          try {
-              voucherOrderMapper.insert(order);
-              //数据库生成的自增ID会回填到实体
-              return order.getId();
-          }catch (DuplicateKeyException ex){
-              //唯一约束冲突，检查是否已经存在对应订单
-              return findExistingOrder(message,ex);
-          }
+        try {
+            return seckillOrderWriter.create(message);
+        } catch (DuplicateKeyException ex) {
+            // 此时内部事务已经回滚，再查询已有订单
+            return findExistingOrder(message, ex);
+        }
     }
 
     private void validateMessage(

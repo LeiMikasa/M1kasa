@@ -24,6 +24,12 @@
 
         <dependency>
             <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-order-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.m1kasa</groupId>
             <artifactId>m1kasa-common-base</artifactId>
             <version>${project.version}</version>
         </dependency>
