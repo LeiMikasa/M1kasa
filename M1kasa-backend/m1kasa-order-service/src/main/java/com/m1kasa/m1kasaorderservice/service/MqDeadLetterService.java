@@ -14,4 +14,6 @@ public interface MqDeadLetterService {
       int size
     );
     DeadLetterDetailDTO findById(Long id);
+
+    String replay(Long id);
 }

@@ -6,11 +6,13 @@ import com.m1kasa.m1kasaorderservice.service.MqDeadLetterService;
 import com.m1kasa.order.api.DeadLetterDetailDTO;
 import com.m1kasa.order.api.DeadLetterPageDTO;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.amqp.AmqpException;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 @RestController
@@ -82,6 +84,44 @@ public class LocalDeadLetterController {
                     .body(Result.fail("死信记录不存在"));
         }
         return ResponseEntity.ok(Result.ok(detail));
+    }
+
+    //重试接口
+    @PostMapping("/{id}/replay")
+    public ResponseEntity<Result<String>> replay(
+            @PathVariable("id") Long id,
+            HttpServletRequest request
+    ){
+        if (!LOOPBACK_ADDRESSES.contains(request.getRemoteAddr())){
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Result.fail("仅允许本机访问该调式接口"));
+        }
+        if (id<=0){
+            return ResponseEntity.badRequest()
+                    .body(Result.fail("记录ID必须大于0"));
+        }
+
+        try {
+            String message = deadLetterService.replay(id);
+
+            return ResponseEntity.ok(Result.ok(message));
+
+        } catch (NoSuchElementException ex) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalStateException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (AmqpException ex) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(Result.fail(ex.getMessage()));
+        }
     }
 
 
