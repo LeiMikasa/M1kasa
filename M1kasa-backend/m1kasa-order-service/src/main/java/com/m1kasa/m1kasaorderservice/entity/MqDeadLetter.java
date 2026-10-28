@@ -24,6 +24,15 @@ public class MqDeadLetter {
     private String lastError;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
+    private Long captureVersion;
+
+    public Long getCaptureVersion() {
+        return captureVersion;
+    }
+
+    public void setCaptureVersion(Long captureVersion) {
+        this.captureVersion = captureVersion;
+    }
 
     public Long getId() {
         return id;
