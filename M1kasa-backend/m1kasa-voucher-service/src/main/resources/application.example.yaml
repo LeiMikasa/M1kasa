@@ -14,3 +14,10 @@ spring:
       port: ${REDIS_PORT:6379}
       database: 0
       password: ${REDIS_PASSWORD}
+
+m1kasa:
+  auth:
+    enabled: true
+    include-paths:
+      - "/voucher/seckill/*/reserve"
+    exclude-paths: []

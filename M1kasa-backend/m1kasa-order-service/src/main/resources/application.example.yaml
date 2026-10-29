@@ -32,3 +32,10 @@ spring:
           initial-interval: 1s
           multiplier: 2
           max-interval: 5s
+
+m1kasa:
+  auth:
+    enabled: true
+    include-paths:
+      - "/order/**"
+    exclude-paths: []

@@ -8,24 +8,11 @@
         <version>0.0.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath> <!-- lookup parent from repository -->
     </parent>
-    <groupId>com.m1kasa</groupId>
     <artifactId>m1kasa-shop-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>m1kasa-shop-service</name>
     <description>m1kasa-shop-service</description>
-    <url/>
-    <licenses>
-        <license/>
-    </licenses>
-    <developers>
-        <developer/>
-    </developers>
-    <scm>
-        <connection/>
-        <developerConnection/>
-        <tag/>
-        <url/>
-    </scm>
+
     <properties>
         <java.version>17</java.version>
     </properties>

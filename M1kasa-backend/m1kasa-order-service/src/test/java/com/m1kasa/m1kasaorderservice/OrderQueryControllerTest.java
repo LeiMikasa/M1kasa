@@ -7,7 +7,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.m1kasa.common.base.context.UserContext;
 import com.m1kasa.m1kasaorderservice.controller.OrderQueryController;
 import com.m1kasa.m1kasaorderservice.entity.VoucherOrder;
-import com.m1kasa.m1kasaorderservice.interceptor.LoginInterceptor;
+import com.m1kasa.common.auth.interceptor.LoginInterceptor;
 import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
 import com.m1kasa.m1kasaorderservice.service.impl.OrderQueryServiceImpl;
 import org.apache.ibatis.builder.MapperBuilderAssistant;

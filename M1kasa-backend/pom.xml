@@ -25,6 +25,8 @@
         <module>m1kasa-order-api</module>
         <module>m1kasa-content-api</module>
         <module>m1kasa-content-service</module>
+        <module>m1kasa-common-storage</module>
+        <module>m1kasa-common-auth</module>
     </modules>
 
     <properties>

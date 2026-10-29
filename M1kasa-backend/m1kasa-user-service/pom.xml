@@ -53,6 +53,11 @@
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-common-auth</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

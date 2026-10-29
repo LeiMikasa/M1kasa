@@ -17,4 +17,9 @@ public interface UserClient {
          @RequestParam("ids") List<Long> ids,
          @RequestHeader("Authorization") String authorization
     );
+
+    @GetMapping("/user/me")
+    Result<UserDTO> getCurrentUser(
+            @RequestHeader("Authorization") String authorization
+    );
 }
