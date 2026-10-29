@@ -1,0 +1,13 @@
+﻿caseLabel,voucherId,mode,threads,requests,accepted,sold_out,failures,httpWindowSeconds,businessResponseRps,averageMs,p95Ms,p99Ms,peakClientInflightApprox,observedDrainAfterHttpSeconds,peakRedisOutboxPending,peakOrderOutboxPending,minimumAvailablePhysicalMiB,passed
+smoke-5,25,burst,5,5,5,0,0,0.097,51.55,96.6,97,97,5,1.597,0,0,843,True
+burst-50-stock10,26,burst,50,50,10,40,0,0.108,462.96,86.24,106,108,50,5.016,10,7,1122,True
+burst-100-stock10,27,burst,100,100,10,90,0,0.13,769.23,105.98,128,129,100,0.873,0,0,1097,True
+burst-200-stock10-r1,28,burst,200,200,10,190,0,0.21,952.38,146.71,200,205,200,2.938,0,10,1085,True
+burst-200-stock200,29,burst,200,200,200,0,0,0.255,784.31,194.88,251,253,200,6.956,200,178,1073,True
+sustained-10rps-60s-valid,31,sustained,20,600,600,0,0,59.88,10.02,8.95,15,28,1,1.39,22,23,801,True
+burst-200-stock10-r2,32,burst,200,200,10,190,0,0.21,952.38,156.91,208,209,200,5.048,10,10,866,True
+burst-200-stock10-r3,33,burst,200,200,10,190,0,0.165,1212.12,121.28,162,164,200,2.985,10,0,863,True
+burst-500-stock10,34,burst,500,500,10,490,0,0.414,1207.73,280.29,382,384,500,2.72,5,4,787,True
+burst-500-stock500,35,burst,500,500,500,0,0,0.546,915.75,367.78,525,526,500,16.473,500,365,1019,True
+sustained-30rps-60s,36,sustained,20,1800,1800,0,0,59.96,30.02,10.36,17,27,4,5.418,78,87,785,True
+sustained-40rps-60s,37,sustained,20,2400,2400,0,0,59.956,40.03,8.74,13,20,2,9.489,111,314,764,True

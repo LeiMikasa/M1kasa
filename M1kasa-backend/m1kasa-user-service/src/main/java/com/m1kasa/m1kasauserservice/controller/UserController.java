@@ -5,10 +5,9 @@ import com.m1kasa.common.dto.Result;
 import com.m1kasa.m1kasauserservice.service.UserService;
 import com.m1kasa.user.api.UserDTO;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/user")
@@ -44,5 +43,18 @@ public class UserController {
         }
 
         return ResponseEntity.ok(Result.ok(user));
+    }
+
+    @GetMapping("/batch")
+    public ResponseEntity<Result<List<UserDTO>>> listByIds(
+            @RequestParam("ids") List<Long> ids
+    ){
+        try {
+            List<UserDTO> users = userService.listByIds(ids);
+            return ResponseEntity.ok(Result.ok(users));
+        }catch (IllegalArgumentException ex){
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+        }
     }
 }

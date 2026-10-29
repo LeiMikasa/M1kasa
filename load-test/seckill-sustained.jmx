@@ -1,0 +1,192 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="M1kasa paced sustained seckill" enabled="true">
+      <stringProp name="TestPlan.comments">Global atomic request time slots pace POST only; unique tokens per iteration; active reservation window targets duration seconds. Fixture is single-use.</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="Variables" enabled="true">
+        <collectionProp name="Arguments.arguments" />
+      </elementProp>
+      <stringProp name="TestPlan.user_define_classpath" />
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Seckill clients" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${__P(threads,50)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(ramp,5)}</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">false</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="One reservation per user" enabled="true">
+          <stringProp name="LoopController.loops">-1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${__P(maxDuration,90)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="Unique login tokens" enabled="true">
+          <stringProp name="filename">${__P(tokenFile)}</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="variableNames">token</stringProp>
+          <boolProp name="ignoreFirstLine">false</boolProp>
+          <stringProp name="delimiter">,</stringProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">false</boolProp>
+          <boolProp name="stopThread">true</boolProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+        </CSVDataSet>
+        <hashTree />
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Bearer authorization" enabled="true">
+          <collectionProp name="HeaderManager.headers">
+            <elementProp name="" elementType="Header">
+              <stringProp name="Header.name">Authorization</stringProp>
+              <stringProp name="Header.value">Bearer ${token}</stringProp>
+            </elementProp>
+          </collectionProp>
+        </HeaderManager>
+        <hashTree />
+        <OnceOnlyController guiclass="OnceOnlyControllerGui" testclass="OnceOnlyController" testname="Prewarm each client once" enabled="true" />
+        <hashTree>
+          <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Optional prewarm" enabled="true">
+            <stringProp name="IfController.condition">${__P(prewarm,true)}</stringProp>
+            <boolProp name="IfController.evaluateAll">false</boolProp>
+            <boolProp name="IfController.useExpression">true</boolProp>
+          </IfController>
+          <hashTree>
+            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="prewarm" enabled="true">
+              <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+                <collectionProp name="Arguments.arguments" />
+              </elementProp>
+              <stringProp name="HTTPSampler.domain">${__P(host,127.0.0.1)}</stringProp>
+              <stringProp name="HTTPSampler.port">${__P(port,8080)}</stringProp>
+              <stringProp name="HTTPSampler.protocol">${__P(protocol,http)}</stringProp>
+              <stringProp name="HTTPSampler.implementation">HttpClient4</stringProp>
+              <stringProp name="HTTPSampler.path">/user/me</stringProp>
+              <stringProp name="HTTPSampler.method">GET</stringProp>
+              <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+              <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+              <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+              <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+              <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+            </HTTPSamplerProxy>
+            <hashTree>
+              <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Validate prewarm login" enabled="true">
+                <stringProp name="scriptLanguage">groovy</stringProp>
+                <stringProp name="cacheKey">m1kasa-prewarm-v1</stringProp>
+                <stringProp name="script">
+prev.setSampleLabel('prewarm')
+try {
+    def body = new groovy.json.JsonSlurper().parseText(new String(prev.getResponseData(), java.nio.charset.StandardCharsets.UTF_8))
+    prev.setSuccessful(prev.getResponseCode() == '200' &amp;&amp; body.success == true &amp;&amp; body.data?.id != null)
+    if (!prev.isSuccessful()) prev.setResponseMessage(body.errorMsg?.toString() ?: 'Prewarm did not authenticate')
+} catch (Exception ignored) {
+    prev.setSuccessful(false)
+}
+                </stringProp>
+              </JSR223PostProcessor>
+              <hashTree />
+            </hashTree>
+          </hashTree>
+        </hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Allocate global request slot (not a measured request)" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="cacheKey">m1kasa-slot-allocator-v1</stringProp>
+          <stringProp name="script">
+SampleResult.setIgnore()
+def state
+synchronized (props) {
+    state = props.get('m1kasa.sustainedState')
+    if (state == null) {
+        state = [sequence: new java.util.concurrent.atomic.AtomicLong(0L), origin: new java.util.concurrent.atomic.AtomicLong(0L)]
+        props.put('m1kasa.sustainedState', state)
+    }
+}
+double rate = Double.parseDouble(props.getProperty('targetRps', '10'))
+long planned = (long) Math.ceil(rate * Double.parseDouble(props.getProperty('duration', '60')))
+long sequence = state.sequence.getAndIncrement()
+if (sequence &gt;= planned) {
+    vars.put('sendReservation', 'false')
+    SampleResult.setStopThread(true)
+    return
+}
+state.origin.compareAndSet(0L, System.nanoTime())
+long scheduled = state.origin.get() + Math.round(sequence * 1000000000d / rate)
+vars.put('slotNanos', Long.toString(scheduled))
+vars.put('sendReservation', 'true')
+</stringProp>
+        </JSR223Sampler>
+        <hashTree />
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Reservation slot available" enabled="true">
+          <stringProp name="IfController.condition">${sendReservation}</stringProp>
+          <boolProp name="IfController.evaluateAll">false</boolProp>
+          <boolProp name="IfController.useExpression">true</boolProp>
+        </IfController>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="POST reservation" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments" />
+            </elementProp>
+            <stringProp name="HTTPSampler.domain">${__P(host,127.0.0.1)}</stringProp>
+            <stringProp name="HTTPSampler.port">${__P(port,8080)}</stringProp>
+            <stringProp name="HTTPSampler.protocol">${__P(protocol,http)}</stringProp>
+            <stringProp name="HTTPSampler.implementation">HttpClient4</stringProp>
+            <stringProp name="HTTPSampler.path">/voucher/seckill/${__P(voucherId)}/reserve</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">false</boolProp>
+            <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <stringProp name="HTTPSampler.connect_timeout">3000</stringProp>
+            <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <JSR223Timer guiclass="TestBeanGUI" testclass="JSR223Timer" testname="Pace reservation POST using global time slot" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="cacheKey">m1kasa-slot-timer-v1</stringProp>
+              <stringProp name="script">
+long scheduled = Long.parseLong(vars.get('slotNanos'))
+long remaining = scheduled - System.nanoTime()
+return remaining &lt;= 0L ? 0L : (long) Math.ceil(remaining / 1000000d)
+</stringProp>
+            </JSR223Timer>
+            <hashTree />
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Classify reservation response" enabled="true">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="cacheKey">m1kasa-classifier-v1</stringProp>
+              <stringProp name="script">
+def code = prev.getResponseCode()
+if (!(code in ['200', '409'])) {
+    prev.setSampleLabel('http_error')
+    prev.setSuccessful(false)
+    return
+}
+try {
+    def body = new groovy.json.JsonSlurper().parseText(new String(prev.getResponseData(), java.nio.charset.StandardCharsets.UTF_8))
+    if (code == '200' &amp;&amp; body.success == true &amp;&amp; body.data == '已获得抢券资格，订单尚未创建') {
+        prev.setSampleLabel('accepted')
+        prev.setSuccessful(true)
+    } else if (code == '409' &amp;&amp; body.success == false &amp;&amp; body.errorMsg == '优惠券已抢完') {
+        prev.setSampleLabel('sold_out')
+        prev.setSuccessful(true)
+    } else if (code == '409' &amp;&amp; body.success == false &amp;&amp; body.errorMsg == '请勿重复抢券') {
+        prev.setSampleLabel('duplicate')
+        prev.setSuccessful(true)
+    } else {
+        prev.setSampleLabel('unexpected_response')
+        prev.setSuccessful(false)
+        prev.setResponseMessage(body.errorMsg?.toString() ?: 'Unexpected business response')
+    }
+} catch (Exception ignored) {
+    prev.setSampleLabel('invalid_json')
+    prev.setSuccessful(false)
+}
+            </stringProp>
+            </JSR223PostProcessor>
+            <hashTree />
+          </hashTree>
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

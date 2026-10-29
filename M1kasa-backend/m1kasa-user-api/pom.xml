@@ -10,5 +10,26 @@
     </parent>
     <artifactId>m1kasa-user-api</artifactId>
 
+    <dependencies>
+        <!-- 提供统一返回类型 Result -->
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-common-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- 提供 @FeignClient 等声明所需的类 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-openfeign-core</artifactId>
+        </dependency>
+
+        <!-- 提供 @GetMapping、@RequestParam 等注解 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+    </dependencies>
+
 
 </project>
