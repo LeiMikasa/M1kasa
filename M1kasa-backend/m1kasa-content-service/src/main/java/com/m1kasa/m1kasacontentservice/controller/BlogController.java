@@ -6,7 +6,7 @@ import com.m1kasa.m1kasacontentservice.service.BlogLikeService;
 import com.m1kasa.m1kasacontentservice.service.BlogPublishService;
 import com.m1kasa.m1kasacontentservice.service.BlogQueryService;
 import feign.FeignException;
-import org.apache.ibatis.transaction.TransactionException;
+import org.springframework.transaction.TransactionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -156,6 +156,31 @@ public class BlogController {
                     ));
         }
     }
+    @GetMapping("/{id}/like")
+    public ResponseEntity<Result<BlogLikeDTO>> getLikeState(
+            @PathVariable("id") Long id
+    ) {
+        try {
+            BlogLikeDTO result = blogLikeService.getLikeState(id);
+            return ResponseEntity.ok(Result.ok(result));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalStateException
+                 | DataAccessException
+                 | TransactionException ex) {
+            log.error("查询点赞状态失败，blogId={}", id, ex);
+
+            return ResponseEntity
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Result.fail(
+                            "点赞状态暂不可用，请稍后重试"
+                    ));
+        }
+    }
+
     @PutMapping(
             value = "/{id}/like",
             consumes = MediaType.APPLICATION_JSON_VALUE
