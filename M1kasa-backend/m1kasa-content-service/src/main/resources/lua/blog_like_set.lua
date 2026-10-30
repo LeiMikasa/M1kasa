@@ -69,10 +69,15 @@ local pendingState = redis.call('HGET', outboxKey, userId)
 if not currentState then
     -- 待发送记录还在，但用户状态丢失，不能按普通初始化处理
     if pendingState then
-        return {-4}
+        return { -4 }
     end
 
-    return {-2}
+    return { -2 }
+end
+
+-- 待发送记录存在时，应当与当前用户状态一致
+if pendingState and pendingState ~= currentState then
+    return {-4}
 end
 -- 4. 解析当前状态，例如：0:2:1793361600000
 local currentLiked, versionText =
