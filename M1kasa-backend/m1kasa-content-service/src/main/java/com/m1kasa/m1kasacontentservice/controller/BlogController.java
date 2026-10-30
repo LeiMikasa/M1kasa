@@ -1,12 +1,12 @@
 package com.m1kasa.m1kasacontentservice.controller;
 
 import com.m1kasa.common.dto.Result;
-import com.m1kasa.content.api.BlogDetailDTO;
-import com.m1kasa.content.api.BlogPageDTO;
-import com.m1kasa.content.api.BlogPublishRequest;
+import com.m1kasa.content.api.*;
+import com.m1kasa.m1kasacontentservice.service.BlogLikeService;
 import com.m1kasa.m1kasacontentservice.service.BlogPublishService;
 import com.m1kasa.m1kasacontentservice.service.BlogQueryService;
 import feign.FeignException;
+import org.apache.ibatis.transaction.TransactionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -19,11 +19,12 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/blog")
 public class BlogController {
-    public BlogController(BlogQueryService blogQueryService, BlogPublishService blogPublishService) {
+    public BlogController(BlogLikeService blogLikeService, BlogQueryService blogQueryService, BlogPublishService blogPublishService) {
+        this.blogLikeService = blogLikeService;
         this.blogQueryService = blogQueryService;
         this.blogPublishService = blogPublishService;
     }
-
+    private final BlogLikeService blogLikeService;
     private final BlogQueryService blogQueryService;
     private final BlogPublishService blogPublishService;
     private static final Logger log =
@@ -154,5 +155,39 @@ public class BlogController {
                             "查询笔记失败，请稍后重试"
                     ));
         }
+    }
+    @PutMapping(
+            value = "/{id}/like",
+            consumes = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<Result<BlogLikeDTO>> setLiked(
+            @PathVariable("id") Long id,
+            @RequestBody BlogLikeRequest request
+            ){
+        //必须明确传入true或false
+        if (request==null|| request.liked()==null){
+            return ResponseEntity.badRequest()
+                    .body(Result.fail("请明确指定liked为true或false"));
+        }
+        try {
+            BlogLikeDTO result = blogLikeService.setLiked(
+                    id, request.liked()
+            );
+            return ResponseEntity.ok(Result.ok(result));
+        }catch (IllegalArgumentException ex){
+            return ResponseEntity.badRequest().body(Result.fail(ex.getMessage()));
+        }catch (IllegalStateException
+                | DataAccessException
+                | TransactionException ex) {
+
+            log.error("处理笔记点赞失败，blogId={}", id, ex);
+
+            return ResponseEntity
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Result.fail(
+                            "点赞暂不可用，结果请以查询到的状态为准"
+                    ));
+        }
+
     }
 }

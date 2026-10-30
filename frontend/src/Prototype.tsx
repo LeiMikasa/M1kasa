@@ -12,6 +12,8 @@ type Shop = { id: number; name: string; typeId: number; images: string | null; a
 type Voucher = { id: number; shopId: number; title: string; subTitle: string | null; rules: string | null; payValue: number; actualValue: number; type: number; status: number; stock: number | null; beginTime: string | null; endTime: string | null };
 type VoucherOrder = { id: string; voucherId: string; status: number; createTime: string };
 type UploadedImage = { objectKey: string; url: string };
+type BlogLike = { likedByMe: boolean; liked: number };
+type BlogLikeState = { identity: string; data: BlogLike | null; phase: 'idle' | 'loading' | 'saving'; message: string; error: string; uncertainTarget: boolean | null };
 type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; content: string; liked: number; comments: number; createTime: string | null };
 type BlogSummary = { id: string; title: string; coverImage: string | null; liked: number | null; comments: number | null; createTime: string | null };
 type BlogPage = { records: BlogSummary[]; total: number; current: number; size: number };
@@ -367,22 +369,121 @@ function RequestState({ loading, error, empty, onRetry, emptyText = '暂时没�
   return null;
 }
 
+const emptyBlogLike = (identity: string, loading = false): BlogLikeState => ({ identity, data: null, phase: loading ? 'loading' : 'idle', message: '', error: '', uncertainTarget: null });
+
+function validBlogLike(value: unknown): value is BlogLike {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<BlogLike>;
+  return typeof result.likedByMe === 'boolean' && typeof result.liked === 'number'
+    && Number.isSafeInteger(result.liked) && result.liked >= 0 && result.liked <= 2147483647;
+}
+
+function useBlogLike(blogId: string, token: string) {
+  const identity = `${blogId}:${token}`;
+  const [saved, setSaved] = useState<BlogLikeState>(() => emptyBlogLike(identity, Boolean(token)));
+  const current = useRef(identity);
+  current.current = identity;
+  const request = useRef<AbortController | null>(null);
+  const path = `/blog/${encodeURIComponent(blogId)}/like`;
+
+  const reload = useCallback(async () => {
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyBlogLike(identity)), phase: 'loading', message: '' }));
+    try {
+      const result = await api<BlogLike>(path, { signal: controller.signal });
+      if (!active()) return;
+      if (!validBlogLike(result)) throw new ApiError('点赞状态返回格式不正确', 200);
+      setSaved({ identity, data: result, phase: 'idle', message: '', error: '', uncertainTarget: null });
+    } catch {
+      if (!active()) return;
+      // A missing GET endpoint does not mean the user has not liked this note.
+      setSaved(previous => ({ ...previous, phase: 'idle',
+        message: previous.data ? '状态暂未刷新，当前显示上次确认的结果。' : '当前点赞状态待确认，你可以明确选择点赞或取消点赞。',
+        error: previous.uncertainTarget !== null ? '上次操作结果仍待确认，可刷新状态或重新提交相同选择。' : '' }));
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }, [identity, path, token]);
+
+  useEffect(() => {
+    request.current?.abort();
+    request.current = null;
+    setSaved(emptyBlogLike(identity, Boolean(token)));
+    void reload();
+    return () => { request.current?.abort(); request.current = null; };
+  }, [identity, reload, token]);
+
+  async function setLiked(liked: boolean) {
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyBlogLike(identity)), phase: 'saving', error: '', message: liked ? '正在点赞…' : '正在取消点赞…' }));
+    try {
+      const result = await api<BlogLike>(path, { method: 'PUT', body: JSON.stringify({ liked }), signal: controller.signal });
+      if (!active()) return;
+      if (!validBlogLike(result) || result.likedByMe !== liked) throw new ApiError('点赞响应与提交状态不一致', 200);
+      setSaved({ identity, data: result, phase: 'idle', message: liked ? '已点赞' : '已取消点赞', error: '', uncertainTarget: null });
+    } catch (error) {
+      if (!active()) return;
+      const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500 || (error.status >= 200 && error.status < 300);
+      setSaved(previous => ({ ...previous, phase: 'idle', data: uncertain ? null : previous.data,
+        uncertainTarget: uncertain ? liked : null, message: '',
+        error: uncertain ? '这次操作结果暂未确认。可刷新状态，或重新提交相同选择。' : (error as Error).message }));
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  const state = saved.identity === identity ? saved : emptyBlogLike(identity, Boolean(token));
+  return { state, busy: state.phase !== 'idle', reload, setLiked };
+}
+
+function StoryLikeActions({ likes, comments }: { likes: ReturnType<typeof useBlogLike>; comments: number }) {
+  const { state, busy, reload, setLiked } = likes;
+  const target = state.uncertainTarget ?? (state.data ? !state.data.likedByMe : true);
+  const label = state.phase === 'saving' ? state.message : state.uncertainTarget !== null
+    ? state.uncertainTarget ? '重新确认点赞' : '重新确认取消点赞'
+    : state.data?.likedByMe ? '取消点赞' : '点赞';
+  return <section className="live-like-section" aria-label="笔记互动">
+    <div className="live-story-stats">
+      <button type="button" className={`live-like-button${state.data?.likedByMe ? ' is-liked' : ''}`} data-testid="live-like-submit" aria-label={label} aria-pressed={state.data?.likedByMe} aria-busy={state.phase === 'saving'} disabled={busy} onClick={() => void setLiked(target)}>
+        {state.data?.likedByMe ? <HeartFilledIcon aria-hidden="true" /> : <HeartIcon aria-hidden="true" />}<span>{label}</span><small data-testid="live-like-count">{state.data ? `${state.data.liked} 次赞` : '赞数待确认'}</small>
+      </button>
+      <span><ChatBubbleIcon aria-hidden="true" />{comments} 条评论</span>
+    </div>
+    <div className="live-like-feedback" aria-live="polite">
+      {state.phase === 'loading' && <p role="status">正在读取点赞状态…</p>}
+      {state.message && <p role="status">{state.message}</p>}
+      {state.error && <p className="live-like-error" role="alert">{state.error}</p>}
+      <div className="live-like-tools">
+        {!state.data && state.uncertainTarget === null && <button type="button" className="outline-button" data-testid="live-like-cancel" disabled={busy} onClick={() => void setLiked(false)}>取消点赞</button>}
+        <button type="button" className="text-button" disabled={busy} onClick={() => void reload()}>刷新点赞状态</button>
+      </div>
+    </div>
+  </section>;
+}
+
 function PublishedStory({ blogId, token, onBack, onLogin, onNew }: {
   blogId: string; token: string; onBack: () => void; onLogin: () => void; onNew: () => void;
 }) {
   const story = useResource<BlogDetail>(token ? `/blog/${encodeURIComponent(blogId)}` : null, token);
+  const likes = useBlogLike(blogId, token);
   const [imageFailed, setImageFailed] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
   useEffect(() => { setImageFailed(false); }, [story.data?.coverImage]);
   useEffect(() => { setAvatarFailed(false); }, [story.data?.authorIcon]);
-  const reload = () => { setImageFailed(false); story.reload(); };
+  const reload = () => { setImageFailed(false); story.reload(); void likes.reload(); };
   const blog = story.data;
   const mismatched = Boolean(blog && String(blog.id) !== blogId);
   const cover = blog?.coverImage || '';
   const readableCover = /^https?:\/\//i.test(cover) || cover.startsWith('/assets/');
 
   return <>
-    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={!token || story.loading}>刷新</button></header>
+    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={!token || story.loading || likes.busy}>刷新</button></header>
     {!token ? <div className="empty-state"><PersonIcon /><h2>登录后，继续读故事</h2><p>这篇笔记已经保存，登录后可以重新查看。</p><button className="primary-button" onClick={onLogin}>登录后查看</button></div> : <>
       <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
       {blog && !mismatched && !story.error && <>
@@ -391,8 +492,8 @@ function PublishedStory({ blogId, token, onBack, onLogin, onNew }: {
           <div className="detail-author"><span className="live-author-avatar">{blog.authorIcon && !avatarFailed ? <img src={blog.authorIcon} alt="" onError={() => setAvatarFailed(true)} /> : <PersonIcon />}</span><span><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span></div>
           <h1>{blog.title}</h1>
           <p className="live-story-content">{blog.content}</p>
-          <div className="live-story-stats"><span><HeartIcon aria-hidden="true" />{blog.liked ?? 0} 次点赞</span><span><ChatBubbleIcon aria-hidden="true" />{blog.comments ?? 0} 条评论</span></div>
-          <p className="preview-caption">点赞与评论功能正在准备中。</p>
+          <StoryLikeActions likes={likes} comments={blog.comments ?? 0} />
+          <p className="preview-caption">评论功能正在准备中。</p>
           <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
         </div>
       </>}

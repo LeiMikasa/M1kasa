@@ -382,3 +382,15 @@
 .my-note-card > .my-note-arrow { flex-shrink:0; width:15px; height:15px; color:var(--muted); }
 .my-notes-empty { padding-left:0; padding-right:0; }
 .my-notes-pagination { padding-left:0; padding-right:0; }
+
+/* Live note likes */
+.live-story-stats .live-like-button { display:inline-flex; align-items:center; flex-wrap:wrap; gap:7px; min-height:42px; padding:8px 11px!important; border:1px solid var(--line)!important; border-radius:22px; font-size:12px; }
+.live-like-button.is-liked { color:var(--coral); border-color:#965b5a!important; background:#fa827a0c!important; }
+.live-like-button small { color:var(--muted); font-size:10px; }
+.live-like-button.is-liked small { color:inherit; }
+.live-like-feedback { margin:0 0 10px; color:var(--muted); font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
+.live-like-feedback p { margin:0 0 8px; font-size:11px; line-height:1.8; }
+.live-like-feedback .live-like-error { color:#ffb1a6; }
+.live-like-tools { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.live-like-tools .text-button { min-height:36px; }
+.live-like-tools .outline-button { min-height:36px; font-size:11px; }
