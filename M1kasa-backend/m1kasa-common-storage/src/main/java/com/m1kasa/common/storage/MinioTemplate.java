@@ -1,10 +1,7 @@
 package com.m1kasa.common.storage;
 
-import io.minio.GetPresignedObjectUrlArgs;
-import io.minio.Http;
-import io.minio.MinioClient;
-import io.minio.PutObjectArgs;
-import io.minio.RemoveObjectArgs;
+import io.minio.*;
+import io.minio.errors.ErrorResponseException;
 import io.minio.errors.MinioException;
 import org.springframework.util.Assert;
 
@@ -98,4 +95,37 @@ public class MinioTemplate {
             throw new IllegalStateException("删除文件失败", ex);
         }
     }
+    /**
+     * 判断文件是否存在
+     */
+    /**
+     * 判断文件是否存在。
+     */
+    public boolean exists(String objectKey) {
+        Assert.hasText(objectKey, "文件路径不能为空");
+
+        try {
+            minioClient.statObject(
+                    StatObjectArgs.builder()
+                            .bucket(bucket)
+                            .object(objectKey)
+                            .build()
+            );
+
+            return true;
+
+        } catch (ErrorResponseException ex) {
+            // 只有明确表示文件不存在，才返回 false
+            if ("NoSuchKey".equals(ex.errorResponse().code())) {
+                return false;
+            }
+
+            throw new IllegalStateException("检查文件是否存在失败", ex);
+
+        } catch (MinioException ex) {
+            throw new IllegalStateException("检查文件是否存在失败", ex);
+        }
+    }
+
+
 }

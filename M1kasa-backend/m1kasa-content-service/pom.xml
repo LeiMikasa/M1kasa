@@ -91,6 +91,12 @@
             <artifactId>m1kasa-common-auth</artifactId>
             <version>${project.version}</version>
         </dependency>
+
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>3.5.17</version>
+        </dependency>
     </dependencies>
 
     <build>

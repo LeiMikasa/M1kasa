@@ -3,7 +3,7 @@ import { ArrowLeftIcon, BookmarkIcon, CameraIcon, CheckIcon, ChevronRightIcon, C
 import { Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes';
 type FeedTab = '推荐' | '附近' | '关注';
 type Result<T> = { success: boolean; errorMsg: string | null; data: T; total: number | null };
 type User = { id: number; nickName: string; icon: string | null };
@@ -11,6 +11,12 @@ type ShopType = { id: number; name: string; icon: string | null };
 type Shop = { id: number; name: string; typeId: number; images: string | null; area: string | null; address: string; avgPrice: number | null; score: number | null; comments: number | null; openHours: string | null; distance: number | null };
 type Voucher = { id: number; shopId: number; title: string; subTitle: string | null; rules: string | null; payValue: number; actualValue: number; type: number; status: number; stock: number | null; beginTime: string | null; endTime: string | null };
 type VoucherOrder = { id: string; voucherId: string; status: number; createTime: string };
+type UploadedImage = { objectKey: string; url: string };
+type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; content: string; liked: number; comments: number; createTime: string | null };
+type BlogSummary = { id: string; title: string; coverImage: string | null; liked: number | null; comments: number | null; createTime: string | null };
+type BlogPage = { records: BlogSummary[]; total: number; current: number; size: number };
+type PublishPhase = 'idle' | 'submitting' | 'uncertain';
+type PhotoUploadState = { preview: string; uploaded: UploadedImage | null; phase: 'idle' | 'uploading' | 'success' | 'error'; error: string; retryable: boolean; previewUnavailable: boolean };
 type ReservationPhase = 'ready' | 'submitting' | 'accepted' | 'uncertain' | 'ordered';
 type ReservationMarker = { phase: 'accepted' | 'uncertain'; attemptId: string };
 
@@ -28,14 +34,16 @@ class ApiError extends Error {
 }
 
 // All business requests use the gateway; never fall back to demonstration data.
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000): Promise<T> {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (options.signal?.aborted) controller.abort();
   options.signal?.addEventListener('abort', cancel, { once: true });
-  const timeout = window.setTimeout(cancel, 12000);
+  const timeout = window.setTimeout(cancel, timeoutMs);
   const headers = new Headers(options.headers);
-  if (options.body) headers.set('Content-Type', 'application/json');
+  // The browser adds the multipart boundary when sending FormData.
+  if (options.body instanceof FormData) headers.delete('Content-Type');
+  else if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   try {
@@ -66,6 +74,94 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     window.clearTimeout(timeout);
     options.signal?.removeEventListener('abort', cancel);
   }
+}
+
+const emptyPhotoUpload = (): PhotoUploadState => ({ preview: '', uploaded: null, phase: 'idle', error: '', retryable: false, previewUnavailable: false });
+
+function usePhotoUpload(token: string) {
+  const [photo, setPhoto] = useState<PhotoUploadState>(emptyPhotoUpload);
+  const fileRef = useRef<File | null>(null);
+  const localPreview = useRef('');
+  const request = useRef<AbortController | null>(null);
+  const sequence = useRef(0);
+  const currentToken = useRef(token);
+  currentToken.current = token;
+
+  const discard = useCallback(() => {
+    sequence.current += 1;
+    request.current?.abort();
+    request.current = null;
+    fileRef.current = null;
+    if (localPreview.current) URL.revokeObjectURL(localPreview.current);
+    localPreview.current = '';
+  }, []);
+
+  useEffect(() => {
+    discard();
+    setPhoto(emptyPhotoUpload());
+    return discard;
+  }, [token, discard]);
+
+  async function send(file: File) {
+    if (request.current) return;
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+      setPhoto(value => ({ ...value, phase: 'error', error: '请先登录后上传照片', retryable: false }));
+      return;
+    }
+    const controller = new AbortController();
+    request.current = controller;
+    const run = ++sequence.current;
+    const active = () => !controller.signal.aborted && sequence.current === run && currentToken.current === token && localStorage.getItem(TOKEN_KEY) === token;
+    setPhoto({ preview: localPreview.current, uploaded: null, phase: 'uploading', error: '', retryable: false, previewUnavailable: false });
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const result = await api<UploadedImage>('/blog/images', { method: 'POST', body, signal: controller.signal }, 45000);
+      if (!active()) return;
+      if (!result || typeof result.objectKey !== 'string' || !result.objectKey.trim() || typeof result.url !== 'string' || !result.url.trim()) {
+        throw new Error('上传结果缺少图片地址，请稍后重试');
+      }
+      const address = new URL(result.url);
+      if (address.protocol !== 'http:' && address.protocol !== 'https:') throw new Error('图片预览地址不可用，请稍后重试');
+      setPhoto({ preview: result.url, uploaded: result, phase: 'success', error: '', retryable: false, previewUnavailable: false });
+    } catch (error) {
+      if (!active()) return;
+      const retryable = !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+      const message = error instanceof ApiError && error.status === 413 ? '图片或上传请求过大，请选择不超过 5MB 的照片' : (error as Error).message;
+      setPhoto({ preview: localPreview.current, uploaded: null, phase: 'error', error: message, retryable, previewUnavailable: false });
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  function select(file: File) {
+    discard();
+    const error = file.size === 0 ? '请选择有内容的照片' : file.size > 5 * 1024 * 1024 ? '照片不能超过 5MB' : file.type && !['image/jpeg', 'image/png'].includes(file.type) ? '目前仅支持 JPEG、PNG 照片' : '';
+    if (error) {
+      setPhoto({ ...emptyPhotoUpload(), phase: 'error', error });
+      return;
+    }
+    fileRef.current = file;
+    localPreview.current = URL.createObjectURL(file);
+    void send(file);
+  }
+
+  function retry() {
+    if (fileRef.current && !request.current) void send(fileRef.current);
+  }
+
+  function previewFailed() {
+    setPhoto(value => value.uploaded && value.preview === value.uploaded.url
+      ? { ...value, preview: localPreview.current, previewUnavailable: true }
+      : { ...value, preview: '' });
+  }
+
+  function clear() {
+    discard();
+    setPhoto(emptyPhotoUpload());
+  }
+
+  return { photo, select, retry, previewFailed, clear };
 }
 
 function useResource<T>(path: string | null, identity = '') {
@@ -271,20 +367,108 @@ function RequestState({ loading, error, empty, onRetry, emptyText = '暂时没�
   return null;
 }
 
+function PublishedStory({ blogId, token, onBack, onLogin, onNew }: {
+  blogId: string; token: string; onBack: () => void; onLogin: () => void; onNew: () => void;
+}) {
+  const story = useResource<BlogDetail>(token ? `/blog/${encodeURIComponent(blogId)}` : null, token);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => { setImageFailed(false); }, [story.data?.coverImage]);
+  useEffect(() => { setAvatarFailed(false); }, [story.data?.authorIcon]);
+  const reload = () => { setImageFailed(false); story.reload(); };
+  const blog = story.data;
+  const mismatched = Boolean(blog && String(blog.id) !== blogId);
+  const cover = blog?.coverImage || '';
+  const readableCover = /^https?:\/\//i.test(cover) || cover.startsWith('/assets/');
+
+  return <>
+    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={!token || story.loading}>刷新</button></header>
+    {!token ? <div className="empty-state"><PersonIcon /><h2>登录后，继续读故事</h2><p>这篇笔记已经保存，登录后可以重新查看。</p><button className="primary-button" onClick={onLogin}>登录后查看</button></div> : <>
+      <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
+      {blog && !mismatched && !story.error && <>
+        {readableCover && !imageFailed ? <img className="detail-hero" src={cover} alt={blog.title} onError={() => setImageFailed(true)} /> : <div className="live-story-image-error"><CameraIcon /><span>图片暂时无法显示，可以刷新笔记重试。</span><button className="outline-button" onClick={reload}>重新加载</button></div>}
+        <div className="detail-body">
+          <div className="detail-author"><span className="live-author-avatar">{blog.authorIcon && !avatarFailed ? <img src={blog.authorIcon} alt="" onError={() => setAvatarFailed(true)} /> : <PersonIcon />}</span><span><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span></div>
+          <h1>{blog.title}</h1>
+          <p className="live-story-content">{blog.content}</p>
+          <div className="live-story-stats"><span><HeartIcon aria-hidden="true" />{blog.liked ?? 0} 次点赞</span><span><ChatBubbleIcon aria-hidden="true" />{blog.comments ?? 0} 条评论</span></div>
+          <p className="preview-caption">点赞与评论功能正在准备中。</p>
+          <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
+        </div>
+      </>}
+    </>}
+  </>;
+}
+
+function NoteThumbnail({ source }: { source: string | null }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [source]);
+  const readable = Boolean(source && (/^https?:\/\//i.test(source) || source.startsWith('/assets/')));
+  return readable && !failed
+    ? <img className="my-note-cover" src={source!} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    : <span className="my-note-cover my-note-cover-empty" aria-label="封面暂不可用"><CameraIcon /></span>;
+}
+
+function MyNotes({ token, current, refreshKey, onPageChange, onLogin, onNew, onOpenNote }: {
+  token: string; current: number; refreshKey: string;
+  onPageChange: (page: number) => void; onLogin: () => void;
+  onNew: () => void; onOpenNote: (id: string) => void;
+}) {
+  const result = useResource<BlogPage>(token ? `/blog/of/me?current=${current}&size=10` : null, `${token}:${refreshKey}`);
+  const data = result.data;
+  const valid = Boolean(data && Array.isArray(data.records)
+    && Number.isSafeInteger(data.total) && data.total >= 0
+    && data.current === current && Number.isInteger(data.size) && data.size >= 1 && data.size <= 50
+    && data.records.every(note => note && typeof note.id === 'string' && /^[1-9]\d*$/.test(note.id)
+      && typeof note.title === 'string' && (note.coverImage === null || typeof note.coverImage === 'string')));
+  const page = valid ? data : null;
+  const pages = page ? Math.max(1, Math.ceil(page.total / page.size)) : 1;
+  const outOfRange = Boolean(page && current > pages);
+  useEffect(() => { if (outOfRange) onPageChange(pages); }, [outOfRange, pages, onPageChange]);
+  const error = result.error || (!result.loading && token && !valid ? '笔记列表返回格式不正确，请重新加载' : '');
+
+  if (!token) return <div className="empty-state"><PersonIcon /><h2>登录后，找回你的记录</h2><p>已发布的笔记会保存在你的账号中。</p><button className="primary-button" onClick={onLogin}>登录后查看</button></div>;
+
+  return <div className="my-notes-body">
+    <div className="my-notes-toolbar"><span>{page ? `已发布 ${page.total} 篇` : '你记录的好地方，都在这里'}</span><button className="text-button" onClick={result.reload} disabled={result.loading}>刷新列表</button></div>
+    <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
+    {page && !result.loading && !error && !outOfRange && <>
+      {page.total === 0 ? <div className="empty-state my-notes-empty"><CameraIcon /><h2>把第一个好地方记下来</h2><p>还没有发布笔记，先从一张照片开始吧。</p><button className="primary-button" onClick={onNew}>写第一篇笔记</button></div> : <>
+        <div className="my-notes-list">
+          {page.records.map(note => <button className="my-note-card" key={note.id} onClick={() => onOpenNote(note.id)} aria-label={`查看笔记：${note.title}`}>
+            <NoteThumbnail source={note.coverImage} />
+            <span className="my-note-copy"><strong>{note.title}</strong><small>{timeLabel(note.createTime)} 发布</small><span className="my-note-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></span></span>
+            <ChevronRightIcon className="my-note-arrow" aria-hidden="true" />
+          </button>)}
+        </div>
+        <div className="pagination my-notes-pagination"><button disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></div>
+      </>}
+    </>}
+  </div>;
+}
+
 export default function Prototype() {
   const keyboard = useKeyboard();
   const [page, setPage] = useState<Page>('home');
+  const currentPage = useRef<Page>(page);
+  currentPage.current = page;
   const [tab, setTab] = useState<FeedTab>('推荐');
   const [liked, setLiked] = useState<number[]>([]);
   const [saved, setSaved] = useState<number[]>([]);
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [draft, setDraft] = useState({ title: '', body: '' });
-  const [draftPhoto, setDraftPhoto] = useState('');
   const photoInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState('');
   const toastTimer = useRef<number | undefined>(undefined);
   const [selectedPost, setSelectedPost] = useState(1);
+  const [selectedBlogId, setSelectedBlogId] = useState<string | null>(null);
+  const [storyReturn, setStoryReturn] = useState<'home' | 'myNotes'>('home');
+  const [myNotesPage, setMyNotesPage] = useState(1);
+  const [lastPublished, setLastPublished] = useState<{ id: string; title: string; token: string } | null>(null);
+  const [publishPhase, setPublishPhase] = useState<PublishPhase>('idle');
+  const [publishError, setPublishError] = useState('');
+  const publishRequest = useRef<AbortController | null>(null);
   const [selectedShopId, setSelectedShopId] = useState<number | null>(null);
   const [selectedVoucher, setSelectedVoucher] = useState<Voucher | null>(null);
   const [typeId, setTypeId] = useState<number | null>(null);
@@ -294,6 +478,7 @@ export default function Prototype() {
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const photoUpload = usePhotoUpload(token);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [codeUntil, setCodeUntil] = useState(0);
@@ -319,10 +504,22 @@ export default function Prototype() {
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(''), 3200);
   }, []);
-  function navigate(destination: Page) { keyboard.hide(); setPage(destination); }
+  function navigate(destination: Page) { keyboard.hide(); currentPage.current = destination; setPage(destination); }
   function openShop(id: number) { setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
-  function openStory(id: number) { setSelectedPost(id); navigate('story'); }
+  function openStory(id: number) { setSelectedBlogId(null); setSelectedPost(id); navigate('story'); }
+  function openPublishedStory(id: string, returnTo: 'home' | 'myNotes' = 'home') { setSelectedBlogId(id); setStoryReturn(returnTo); navigate('story'); }
+  function openMyNotes() {
+    setMyNotesPage(1);
+    if (!token) { openLogin('myNotes'); return; }
+    navigate('myNotes');
+  }
+  function choosePhoto() {
+    if (publishRequest.current) return;
+    keyboard.hide();
+    if (!token) { openLogin('publish'); return; }
+    if (photoUpload.photo.phase !== 'uploading') photoInput.current?.click();
+  }
   function toggle(id: number, values: number[], setter: (value: number[]) => void) { setter(values.includes(id) ? values.filter(value => value !== id) : [...values, id]); }
 
   useEffect(() => {
@@ -343,7 +540,59 @@ export default function Prototype() {
     window.addEventListener('storage', storage);
     return () => { window.removeEventListener(AUTH_EVENT, expired); window.removeEventListener('storage', storage); };
   }, [flash]);
-  useEffect(() => () => { if (draftPhoto) URL.revokeObjectURL(draftPhoto); }, [draftPhoto]);
+
+  useEffect(() => {
+    setPublishPhase('idle');
+    setPublishError('');
+    setLastPublished(null);
+    setMyNotesPage(1);
+    return () => {
+      publishRequest.current?.abort();
+      publishRequest.current = null;
+    };
+  }, [token]);
+
+  async function publishStory(allowUncertainRetry = false) {
+    if (publishRequest.current || (publishPhase === 'uncertain' && !allowUncertainRetry)) return;
+    if (!token) { openLogin('publish'); return; }
+    if (localStorage.getItem(TOKEN_KEY) !== token) return;
+    const title = draft.title.trim();
+    const content = draft.body.trim();
+    const image = photoUpload.photo.uploaded;
+    if (!title || title.length > 60) { setPublishError('请输入不超过 60 个字符的标题'); return; }
+    if (!content || content.length > 10000) { setPublishError('请输入正文，最多 10000 个字符'); return; }
+    if (photoUpload.photo.phase !== 'success' || !image) { setPublishError('请先成功上传一张照片'); return; }
+    keyboard.hide();
+    const controller = new AbortController();
+    publishRequest.current = controller;
+    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    setPublishPhase('submitting');
+    setPublishError('');
+    try {
+      const result = await api<string | number>('/blog', {
+        method: 'POST',
+        body: JSON.stringify({ title, coverImage: image.objectKey, content }),
+        signal: controller.signal,
+      });
+      if (!active()) return;
+      const id = typeof result === 'string' ? result : typeof result === 'number' && Number.isSafeInteger(result) ? String(result) : '';
+      if (!/^[1-9]\d*$/.test(id)) throw new Error('发布响应没有返回有效的笔记编号');
+      setLastPublished({ id, title, token });
+      setMyNotesPage(1);
+      setPublishPhase('idle');
+      setDraft({ title: '', body: '' });
+      photoUpload.clear();
+      flash('故事发布成功');
+      if (currentPage.current === 'publish') openPublishedStory(id, 'myNotes');
+    } catch (error) {
+      if (!active()) return;
+      const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500 || (error.status >= 200 && error.status < 300);
+      setPublishPhase(uncertain ? 'uncertain' : 'idle');
+      setPublishError(uncertain ? '发布结果暂未确认，笔记可能已经创建。再次提交可能产生重复内容，请先确认后再决定是否重试。' : (error as Error).message);
+    } finally {
+      if (publishRequest.current === controller) publishRequest.current = null;
+    }
+  }
 
   async function sendCode() {
     if (sendingCode || secondsLeft > 0) return;
@@ -406,11 +655,13 @@ export default function Prototype() {
   }
 
   return <div className="m1-app">
-    <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}`} key={page}>
+    {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
+    <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}`} key={page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
         <button className="live-entry" onClick={() => navigate('nearby')}><MapPinIcon /><span><strong>去逛逛真实的小店</strong><small>店铺信息与优惠券已连接服务端</small></span><ChevronRightIcon /></button>
+        {lastPublished && lastPublished.token === token && <button className="live-entry recent-story-entry" onClick={() => openPublishedStory(lastPublished.id)}><CheckIcon /><span><strong>{lastPublished.title}</strong><small>刚刚发布 · 查看你的故事</small></span><ChevronRightIcon /></button>}
         {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注与故事服务正在准备中。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <div className="feed-list"><p className="preview-caption">灵感故事 · 内容预览，互动仅在当前页面保留</p>{posts.map((post, index) => <article className="story-card" key={post.id}>
           <button className="story-photo-button" onClick={() => openStory(post.id)} aria-label={`查看${post.title}`}><img className="story-photo" src={asset + post.photo} alt={post.title} /><span className="photo-counter">0{index + 1} / 0{posts.length}</span></button>
           <div className="author-row"><img className="avatar" src={asset + 'creator-avatar.png'} alt="" /><div className="author-meta"><strong>{post.author}</strong><span>{post.time} · {post.location}</span></div></div>
@@ -450,20 +701,50 @@ export default function Prototype() {
       {page === 'profile' && <>
         <header className="profile-header"><span className="eyebrow">YOUR LITTLE CORNER</span><h1>我的巷里<span className="accent-dot">.</span></h1><div className="profile-identity"><div className="profile-avatar"><PersonIcon /></div><span><strong>{me.data?.nickName || (token ? me.error ? '暂时无法加载个人信息' : '正在确认登录状态' : '欢迎来巷里走走')}</strong><small>{me.data ? `账号 ID：${me.data.id}` : token ? me.error ? '请重试下方请求' : '连接你的巷里账号' : '登录后，开启你的巷里生活'}</small></span>{!token && <button className="outline-button" onClick={() => openLogin()}>登录</button>}</div></header>
         {token && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
-        <div className="profile-menu"><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
+        <div className="profile-menu"><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
       </>}
+
+      {page === 'myNotes' && <MyNotes token={token} current={myNotesPage} refreshKey={lastPublished?.id || ''} onPageChange={setMyNotesPage} onLogin={() => openLogin('myNotes')} onNew={() => navigate('publish')} onOpenNote={id => openPublishedStory(id, 'myNotes')} />}
 
       {page === 'login' && <>
         <header className="page-header"><button aria-label="返回" onClick={() => { loginAttempt.current += 1; setLoggingIn(false); navigate(loginReturn); }}><ArrowLeftIcon /></button><span>登录巷里</span><span /></header>
         <div className="login-body"><span className="eyebrow">GOOD TO SEE YOU</span><h1>好久不见<span className="accent-dot">.</span></h1><p>用手机号，找回你的巷里生活。</p><form onSubmit={event => { event.preventDefault(); void login(); }}><label htmlFor="login-phone">手机号</label><KeyboardInput id="login-phone" type="tel" inputMode="numeric" autoComplete="tel" value={phone} maxLength={11} disabled={loggingIn || sendingCode} onChange={event => setPhone(event.target.value.replace(/\D/g, ''))} placeholder="请输入 11 位手机号" /><label htmlFor="login-code">验证码</label><div className="verification-row"><KeyboardInput id="login-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} disabled={loggingIn} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="六位验证码" /><button type="button" onClick={() => void sendCode()} disabled={sendingCode || secondsLeft > 0 || loggingIn}>{sendingCode ? '请求中…' : secondsLeft > 0 ? `${secondsLeft}s 后重试` : '获取验证码'}</button></div>{loginError && <p className="form-error" role="alert">{loginError}</p>}<button className="coral-button" type="submit" disabled={loggingIn}>{loggingIn ? '正在登录…' : '登录 / 注册'}</button></form><p className="login-note">首次登录将自动创建账号。本地调试的验证码请查看用户服务控制台，当前未接入真实短信。</p></div>
       </>}
 
-      {page === 'story' && <>
+      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} onBack={() => navigate(storyReturn)} onLogin={() => openLogin('story')} onNew={() => navigate('publish')} />}
+      {page === 'story' && !selectedBlogId && <>
         <header className="page-header"><button onClick={() => navigate('home')} aria-label="返回"><ArrowLeftIcon /></button><span>巷里故事 · 内容预览</span><button onClick={() => toggle(activePost.id, saved, setSaved)} aria-label="预览收藏"><BookmarkIcon className={saved.includes(activePost.id) ? 'saved-icon' : ''} /></button></header><img className="detail-hero" src={asset + activePost.photo} alt={activePost.title} /><div className="detail-body"><div className="detail-author"><img className="avatar" src={asset + 'creator-avatar.png'} alt="" /><span><strong>{activePost.author}</strong><small>{activePost.time} · {activePost.location}</small></span></div><h1>{activePost.title}</h1><p>{activePost.excerpt}</p><p>有时候，最喜欢的地方是走着走着碰到的。店里放着轻轻的音乐，热腾腾的一餐刚好抚平忙碌的一天。</p><div className="story-location"><MapPinIcon />{activePost.location} · {activePost.shop}</div><button className="coral-button" onClick={() => navigate('nearby')}>逛逛真实的小店 <ChevronRightIcon /></button><div className="detail-divider" /><p className="preview-caption">这是一篇内容预览，故事发布、评论与关注功能正在准备中。</p></div>
       </>}
 
       {page === 'publish' && <>
-        <header className="sub-header"><div><span className="eyebrow">SHARE YOUR MOMENT</span><h1>记下一个好地方<span className="accent-dot">.</span></h1></div></header><div className="publish-body"><p className="preview-caption">故事服务尚未开放，当前内容仅在本次页面中暂存。</p><input ref={photoInput} className="visually-hidden" type="file" accept="image/*" aria-label="选择故事照片" onChange={event => { const file = event.target.files?.[0]; if (file) setDraftPhoto(URL.createObjectURL(file)); }} /><button className="upload-box" onClick={() => photoInput.current?.click()}>{draftPhoto ? <img className="draft-preview" src={draftPhoto} alt="故事照片预览" /> : <><CameraIcon /><strong>添加照片</strong><span>让故事从一张照片开始</span></>}</button><label>一句话标题<KeyboardInput value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} maxLength={60} placeholder="比如：转角遇到的那家小店" /></label><label>说说你的故事<KeyboardTextarea value={draft.body} onChange={event => setDraft({ ...draft, body: event.target.value })} placeholder="今天发生了什么好事？" rows={5} /></label><p className="checkout-note">内容尚未上传，刷新页面后不会保留。</p><button className="coral-button" disabled>故事发布功能暂未开放</button></div>
+        <header className="sub-header"><div><span className="eyebrow">SHARE YOUR MOMENT</span><h1>记下一个好地方<span className="accent-dot">.</span></h1></div></header>
+        <div className="publish-body">
+          <p className="preview-caption">先选一张照片，再慢慢写下你的发现。</p>
+          <input ref={photoInput} className="visually-hidden" type="file" accept="image/jpeg,image/png" aria-label="选择故事照片" disabled={photoUpload.photo.phase === 'uploading' || publishPhase === 'submitting'} onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (!file || publishRequest.current) return;
+            if (!token) { openLogin('publish'); return; }
+            photoUpload.select(file);
+          }} />
+          <button className="upload-box" type="button" onClick={choosePhoto} disabled={photoUpload.photo.phase === 'uploading' || publishPhase === 'submitting'} aria-label={photoUpload.photo.preview ? '更换故事照片' : token ? '添加故事照片' : '登录后添加故事照片'} aria-busy={photoUpload.photo.phase === 'uploading'} aria-describedby="photo-upload-feedback">
+            {photoUpload.photo.preview ? <img className="draft-preview" src={photoUpload.photo.preview} alt="故事照片预览" onError={photoUpload.previewFailed} /> : <><CameraIcon /><strong>{token ? '添加照片' : '登录后添加照片'}</strong><span>JPEG、PNG · 单张不超过 5MB</span></>}
+            {photoUpload.photo.phase === 'uploading' && <span className="photo-upload-overlay"><i className="photo-upload-spinner" aria-hidden="true" />正在上传照片…</span>}
+          </button>
+          <div id="photo-upload-feedback" className={`photo-upload-feedback ${photoUpload.photo.phase}`} role={photoUpload.photo.phase === 'error' ? 'alert' : 'status'} aria-live="polite">
+            {photoUpload.photo.phase === 'idle' && <span>{token ? '照片上传后可预览，支持不超过 2000 万像素的图片。' : '登录后即可上传照片，文字可以先在这里记下。'}</span>}
+            {photoUpload.photo.phase === 'uploading' && <span>正在上传，请稍候。你可以继续填写标题与正文。</span>}
+            {photoUpload.photo.phase === 'success' && <><span className="photo-upload-success"><CheckIcon />照片已上传，故事尚未发布</span>{photoUpload.photo.previewUnavailable && <span>在线预览暂时无法加载，当前显示本地照片。</span>}</>}
+            {photoUpload.photo.phase === 'error' && <><span>{photoUpload.photo.error}</span>{photoUpload.photo.retryable && token && <button type="button" className="outline-button" onClick={photoUpload.retry}>重试上传</button>}</>}
+          </div>
+          {photoUpload.photo.preview && photoUpload.photo.phase !== 'uploading' && <button type="button" className="text-button change-photo" onClick={choosePhoto} disabled={publishPhase === 'submitting'}>更换照片</button>}
+          <label>一句话标题<KeyboardInput value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" /></label>
+          <label>说说你的故事<KeyboardTextarea value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} /></label>
+          <small className="draft-counter">{draft.body.length} / 10000</small>
+          <p className="checkout-note">发布后可以查看完整故事。发布前，草稿仅在当前页面暂存，刷新后不会保留。</p>
+          {publishError && <p className="form-error publish-error" role="alert">{publishError}</p>}
+          <button className="coral-button" type="button" disabled={publishPhase === 'submitting' || photoUpload.photo.phase === 'uploading'} onClick={() => void publishStory(publishPhase === 'uncertain')}>{publishPhase === 'submitting' ? '正在发布…' : photoUpload.photo.phase === 'uploading' ? '照片上传中…' : !token ? '登录并发布' : publishPhase === 'uncertain' ? '仍要再次发布' : '发布故事'}</button>
+        </div>
       </>}
 
       {page === 'messages' && <><header className="sub-header"><div><span className="eyebrow">STAY IN TOUCH</span><h1>消息<span className="accent-dot">.</span></h1></div></header><div className="empty-state"><ChatBubbleIcon /><h2>期待新的问候</h2><p>消息功能正在准备中。</p><button className="primary-button" onClick={() => navigate('nearby')}>先去逛逛小店</button></div></>}
