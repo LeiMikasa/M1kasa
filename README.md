@@ -276,5 +276,6 @@ npm run build
 - [秒杀下单与库存一致性方案](docs/秒杀下单与库存一致性方案.md)
 - [Redis Outbox 实现说明](docs/秒杀下单-Redis-Outbox实现说明.md)
 - [点赞功能实现与问答总结](docs/点赞功能实现与问答总结-20261030.md)
+- [点赞 Lua 脚本说明（完整代码）](docs/点赞Lua脚本说明.md)
 - [秒杀微服务压测报告](docs/压测报告-20261028.md)
 - [压测操作步骤](load-test/README.md)
