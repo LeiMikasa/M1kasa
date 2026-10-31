@@ -51,7 +51,7 @@ public class BlogLikeOutboxJob {
                     if (blogId<=0 || !outboxkey.equals(BlogLikeRedisKeys.outbox(blogId))){
                         throw new IllegalArgumentException("点赞Outbox Key不合法");
                     }
-
+                    dispatchBlog(blogId, outboxkey);
                 }catch (RuntimeException ex){
                     log.warn("处理点赞Outbox失败，key={}",
                             outboxkey,ex);
