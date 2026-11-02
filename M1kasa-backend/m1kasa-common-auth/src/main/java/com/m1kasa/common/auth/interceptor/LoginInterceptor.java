@@ -6,9 +6,11 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.util.StringUtils;
+import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.io.IOException;
+import java.lang.annotation.Annotation;
 import java.nio.charset.StandardCharsets;
 
 public class LoginInterceptor implements HandlerInterceptor {
@@ -33,7 +35,11 @@ public class LoginInterceptor implements HandlerInterceptor {
 
         // 清理当前线程可能残留的用户信息
         UserContext.clear();
-
+        //当前controller方法运行匿名访问，直接放行
+        if (handler instanceof HandlerMethod handlerMethod
+                &&handlerMethod.hasMethodAnnotation(Annotation.class)){
+            return true;
+        }
         // 1. 获取请求头
         String authorization =
                 request.getHeader(HttpHeaders.AUTHORIZATION);

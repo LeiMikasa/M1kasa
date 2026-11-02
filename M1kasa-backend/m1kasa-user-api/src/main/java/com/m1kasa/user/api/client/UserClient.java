@@ -22,4 +22,8 @@ public interface UserClient {
     Result<UserDTO> getCurrentUser(
             @RequestHeader("Authorization") String authorization
     );
+    @GetMapping("/user/public/batch")
+    Result<List<UserDTO>> listPublicByIds(
+            @RequestParam("ids") List<Long> ids
+    );
 }

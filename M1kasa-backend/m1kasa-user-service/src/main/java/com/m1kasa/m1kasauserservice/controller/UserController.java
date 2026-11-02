@@ -57,4 +57,17 @@ public class UserController {
                     .body(Result.fail(ex.getMessage()));
         }
     }
+    //公开接口
+    @GetMapping("/publish/batch")
+    public ResponseEntity<Result<List<UserDTO>>> listPublicByIds(
+            @RequestParam("ids") List<Long> ids
+    ){
+        try {
+            //查询指定作者的公开资料
+            List<UserDTO> users = userService.listByIds(ids);
+            return ResponseEntity.ok(Result.ok(users));
+        }catch (IllegalArgumentException ex){
+            return ResponseEntity.badRequest().body(Result.fail(ex.getMessage()));
+        }
+    }
 }

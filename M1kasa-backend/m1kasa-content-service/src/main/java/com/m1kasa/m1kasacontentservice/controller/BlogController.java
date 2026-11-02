@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasacontentservice.controller;
 
+import com.m1kasa.common.auth.annotation.AllowAnonymous;
 import com.m1kasa.common.dto.Result;
 import com.m1kasa.content.api.*;
 import com.m1kasa.m1kasacontentservice.service.BlogLikeService;
@@ -29,19 +30,11 @@ public class BlogController {
     private final BlogPublishService blogPublishService;
     private static final Logger log =
             LoggerFactory.getLogger(BlogController.class);
+    @AllowAnonymous
     @GetMapping("/{id}")
     public ResponseEntity<Result<BlogDetailDTO>> findById(
-            @PathVariable("id") Long id,
-            @RequestHeader(
-                    value = "Authorization",
-                    required = false
-            ) String authorization
+            @PathVariable("id") Long id
     ) {
-        if (!StringUtils.hasText(authorization)
-                || !authorization.startsWith("Bearer ")) {
-            return ResponseEntity.status(401)
-                    .body(Result.fail("请先登录"));
-        }
 
         if (id <= 0) {
             return ResponseEntity.badRequest()
@@ -49,10 +42,7 @@ public class BlogController {
         }
 
         try {
-            BlogDetailDTO detail = blogQueryService.findById(
-                    id,
-                    authorization
-            );
+            BlogDetailDTO detail = blogQueryService.findById(id);
 
             if (detail == null) {
                 return ResponseEntity.status(404)
@@ -215,4 +205,44 @@ public class BlogController {
         }
 
     }
+    @AllowAnonymous
+    @GetMapping("/feed")
+    public ResponseEntity<Result<BlogFeedPageDTO>> findFeed(
+            @RequestParam(
+                    name = "current",
+                    defaultValue = "1"
+            ) int current,
+            @RequestParam(
+                    name = "size",
+                    defaultValue = "10"
+            ) int size,
+            @RequestHeader("Authorization") String authorization
+    ){
+        try {
+            BlogFeedPageDTO page = blogQueryService.findFeed(
+                    current, size
+            );
+            return ResponseEntity.ok(Result.ok(page));
+        }catch (IllegalArgumentException ex){
+            //分页参数不合法
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+        }catch (FeignException ex){
+            //调用服务时，登录态可能已经失效
+            if (ex.status()==401){
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Result.fail("登录已过期，请重新登录"));
+            }
+            log.error("查询笔记作者资料失败",ex);
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(Result.fail("作者资料暂不可用，请稍后重试"));
+        } catch (IllegalStateException | DataAccessException ex) {
+            // 用户服务返回异常结果、图片存储或数据库异常等
+            log.error("查询笔记广场失败", ex);
+
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Result.fail("笔记广场暂不可用，请稍后重试"));
+        }
+    }
+
 }

@@ -5,17 +5,19 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.m1kasa.common.base.context.UserContext;
 import com.m1kasa.common.dto.Result;
 import com.m1kasa.common.storage.MinioTemplate;
-import com.m1kasa.content.api.BlogDetailDTO;
-import com.m1kasa.content.api.BlogPageDTO;
-import com.m1kasa.content.api.BlogSummaryDTO;
+import com.m1kasa.content.api.*;
 import com.m1kasa.m1kasacontentservice.entity.Blog;
 import com.m1kasa.m1kasacontentservice.mapper.BlogMapper;
 import com.m1kasa.m1kasacontentservice.service.BlogQueryService;
 import com.m1kasa.user.api.UserDTO;
 import com.m1kasa.user.api.client.UserClient;
+import org.apache.catalina.util.StringUtil;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class BlogQueryServiceImpl implements BlogQueryService {
@@ -33,7 +35,7 @@ public class BlogQueryServiceImpl implements BlogQueryService {
     }
 
     @Override
-    public BlogDetailDTO findById(Long id, String authorization) {
+    public BlogDetailDTO findById(Long id) {
           //只查询已发布的笔记
         Blog blog = blogMapper.selectOne(
                 new LambdaQueryWrapper<Blog>()
@@ -45,9 +47,8 @@ public class BlogQueryServiceImpl implements BlogQueryService {
             return null;
         }
         //通过feign查询作者资料
-        Result<List<UserDTO>> reply = userClient.listByIds(
-                List.of(blog.getUserId()),
-                authorization
+        Result<List<UserDTO>> reply = userClient.listPublicByIds(
+                List.of(blog.getUserId())
         );
         //调用结果异常时，交给controller返回错误
         if (reply==null || !Boolean.TRUE.equals(reply.success()) || reply.data()==null){
@@ -128,4 +129,118 @@ public class BlogQueryServiceImpl implements BlogQueryService {
                 page.getSize()
         );
     }
+
+    @Override
+    public BlogFeedPageDTO findFeed(int current, int size) {
+        //1.校验分页参数
+        if (current<1||size<1||size>50){
+            throw new IllegalArgumentException( "页码必须大于0，每页条数必须在1到50之间");
+        }
+        //2.分页查询所有已发布笔记
+        Page<Blog> page=new Page<>(current,size);
+        blogMapper.selectPage(
+                page,
+                new LambdaQueryWrapper<Blog>()
+                        .select(
+                                Blog::getId,
+                                Blog::getUserId,
+                                Blog::getTitle,
+                                Blog::getCoverImage,
+                                Blog::getLiked,
+                                Blog::getComments,
+                                Blog::getCreateTime
+                        )
+                        .eq(Blog::getStatus, PUBLISHED)
+                        .orderByDesc(
+                                Blog::getCreateTime,
+                                Blog::getId
+                        )
+        );
+        List<Blog> blogs=page.getRecords();
+        //3.当前页没有记录，直接返回
+        if (blogs.isEmpty()){
+            return new BlogFeedPageDTO(
+                    List.of(),
+                    page.getTotal(),
+                    page.getCurrent(),
+                    page.getSize()
+            );
+        }
+        //4.手机作者ID并去重
+        List<Long> authorIds = blogs.stream()
+                .map(Blog::getUserId)
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        Map<Long,UserDTO> authorMap=new HashMap<>();
+        //5.一次批量RPC查询作者资料
+        if (!authorIds.isEmpty()){
+            Result<List<UserDTO>> reply = userClient.listPublicByIds(
+                    authorIds
+            );
+            if (reply==null || !Boolean.TRUE.equals(reply.success())
+            || reply.data()==null){
+                throw new IllegalStateException("用户服务返回异常结果");
+            }
+            for (UserDTO user : reply.data()) {
+                if (user!=null&&user.id()!=null){
+                    authorMap.put(user.id(),user);
+                }
+            }
+        }
+        //6.组装
+        List<BlogFeedItemDTO> records = blogs.stream()
+                .map(blog -> {
+                    UserDTO author = authorMap.get(
+                            blog.getUserId()
+                    );
+
+                    String authorName =
+                            author != null
+                                    && StringUtils.hasText(author.nickName())
+                                    ? author.nickName()
+                                    : "未知用户";
+
+                    String authorIcon = author == null
+                            ? null
+                            : author.icon();
+
+                    String coverImageUrl = null;
+
+                    if (StringUtils.hasText(blog.getCoverImage())) {
+                        coverImageUrl =
+                                minioTemplate.getPresignedGetUrl(
+                                        blog.getCoverImage(),
+                                        IMAGE_URL_EXPIRY_SECONDS
+                                );
+                    }
+
+                    return new BlogFeedItemDTO(
+                            blog.getId().toString(),
+                            blog.getUserId() == null
+                                    ? null
+                                    : blog.getUserId().toString(),
+                            authorName,
+                            authorIcon,
+                            blog.getTitle(),
+                            coverImageUrl,
+                            blog.getLiked() == null
+                                    ? 0
+                                    : blog.getLiked(),
+                            blog.getComments() == null
+                                    ? 0
+                                    : blog.getComments(),
+                            blog.getCreateTime()
+                    );
+                })
+                .toList();
+        // 7. 返回分页结果
+        return new BlogFeedPageDTO(
+                records,
+                page.getTotal(),
+                page.getCurrent(),
+                page.getSize()
+        );
+    }
+
 }

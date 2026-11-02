@@ -114,7 +114,14 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
         if (HttpMethod.GET.equals(method)) {
             return "/shop-type/list".equals(path)
                     || path.startsWith("/shop/")
-                    || path.matches("/voucher/list/[^/]+");
+                    || path.matches("/voucher/list/[^/]+")
+                    //作者公开资料
+                    || "/user/public/batch".equals(path)
+                    //笔记广场
+                    || "/blog/feed".equals(path)
+                    //笔记详情，ID必须由数字组成
+                    || path.matches("/blog/[0-9]+")
+                    ;
         }
 
         return false;
