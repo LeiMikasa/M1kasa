@@ -1,7 +1,7 @@
 package com.m1kasa.m1kasaorderservice.mq;
 
+import com.m1kasa.common.util.DeadLetterMessageKey;
 import com.m1kasa.m1kasaorderservice.entity.MqDeadLetter;
-import com.m1kasa.m1kasaorderservice.util.DeadLetterMessageKey;
 import com.rabbitmq.client.LongString;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;

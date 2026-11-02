@@ -1,4 +1,4 @@
-package com.m1kasa.m1kasaorderservice.util;
+package com.m1kasa.common.util;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
