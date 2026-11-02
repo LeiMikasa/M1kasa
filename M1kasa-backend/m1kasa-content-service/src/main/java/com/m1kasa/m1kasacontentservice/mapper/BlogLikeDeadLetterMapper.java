@@ -5,6 +5,7 @@ import com.m1kasa.m1kasacontentservice.entity.BlogLikeDeadLetter;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface BlogLikeDeadLetterMapper
@@ -51,5 +52,46 @@ public interface BlogLikeDeadLetterMapper
             """)
     int insertOrRefresh(
             @Param("record") BlogLikeDeadLetter record
+    );
+    //发送前  记录重发尝试
+    @Update("""
+        UPDATE tb_blog_like_dead_letter
+        SET replay_count = replay_count + 1,
+            update_time = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND capture_version = #{captureVersion}
+          AND status = 0
+        """)
+    int recordReplayAttempt(
+            @Param("id") Long id,
+            @Param("captureVersion") Long captureVersion
+    );
+    //发布确认成功后，标记重发已确认
+    @Update("""
+        UPDATE tb_blog_like_dead_letter
+        SET status = 1,
+            last_error = NULL,
+            update_time = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND capture_version = #{captureVersion}
+          AND status = 0
+        """)
+    int markReplayConfirmed(
+            @Param("id") Long id,
+            @Param("captureVersion") Long captureVersion
+    );
+    //发送失败或确认超时，记录错误
+    @Update("""
+        UPDATE tb_blog_like_dead_letter
+        SET last_error = #{error},
+            update_time = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+          AND capture_version = #{captureVersion}
+          AND status = 0
+        """)
+    int recordReplayFailure(
+            @Param("id") Long id,
+            @Param("captureVersion") Long captureVersion,
+            @Param("error") String error
     );
 }

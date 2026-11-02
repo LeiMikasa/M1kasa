@@ -33,6 +33,15 @@ public class BlogLikeDeadLetter {
     private String lastError;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
+    private Integer replayCount;
+
+    public Integer getReplayCount() {
+        return replayCount;
+    }
+
+    public void setReplayCount(Integer replayCount) {
+        this.replayCount = replayCount;
+    }
 
     public Long getId() {
         return id;
