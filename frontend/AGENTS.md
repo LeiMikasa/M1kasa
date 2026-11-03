@@ -69,3 +69,8 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 - Fixed phone chrome should not animate with pushed screens. Screen content can animate; the status bar, camera cutout, and preview chrome should stay put.
 - Keep the keyboard below the home indicator/safe area layer in z-index, and above ordinary app UI while visible.
 - Keep the home indicator as the topmost safe-area layer in the z-index above everything else in the prototype.
+
+## Profile editing decisions
+
+- On the My page, the avatar and nickname area is one accessible entry to Edit Profile, with a visible edit hint. Logged-out users go through login before editing.
+- Keep profile editing on a separate screen in the existing visual style. Avatar selection uploads a preview; nickname/avatar changes take effect only after Save.

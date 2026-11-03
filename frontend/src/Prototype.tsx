@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
-import { Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard } from './mobile';
+import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, Pencil1Icon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
+import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile';
 type FeedTab = '推荐' | '附近' | '关注';
 type FollowListMode = 'following' | 'followers';
 type FollowPerson = { userId: string; nickName: string; icon: string | null; followTime: string | null; followed: boolean };
 type FollowPeoplePage = { records: FollowPerson[]; total: number; current: number; size: number };
 type Result<T> = { success: boolean; errorMsg: string | null; data: T; total: number | null };
-type User = { id: number; nickName: string; icon: string | null };
+type User = { id: string | number; nickName: string; icon: string | null };
 type ShopType = { id: number; name: string; icon: string | null };
 type Shop = { id: number; name: string; typeId: number; images: string | null; area: string | null; address: string; avgPrice: number | null; score: number | null; comments: number | null; openHours: string | null; distance: number | null };
 type Voucher = { id: number; shopId: number; title: string; subTitle: string | null; rules: string | null; payValue: number; actualValue: number; type: number; status: number; stock: number | null; beginTime: string | null; endTime: string | null };
 type VoucherOrder = { id: string; voucherId: string; status: number; createTime: string };
 type UploadedImage = { objectKey: string; url: string };
+type ProfileUpdate = { nickName: string; avatarObjectKey: string | null };
 type BlogLike = { likedByMe: boolean; liked: number };
 type AuthorFollow = { targetUserId: string; followed: boolean };
 type AuthorFollowRequestState = { identity: string; data: AuthorFollow | null; phase: 'idle' | 'loading' | 'saving'; error: string; message: string; uncertainTarget: boolean | null };
@@ -82,7 +83,7 @@ async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000
 
 const emptyPhotoUpload = (): PhotoUploadState => ({ preview: '', uploaded: null, phase: 'idle', error: '', retryable: false, previewUnavailable: false });
 
-function usePhotoUpload(token: string) {
+function usePhotoUpload(token: string, endpoint = '/blog/images', ownerId: string | null = null) {
   const [photo, setPhoto] = useState<PhotoUploadState>(emptyPhotoUpload);
   const fileRef = useRef<File | null>(null);
   const localPreview = useRef('');
@@ -104,7 +105,7 @@ function usePhotoUpload(token: string) {
     discard();
     setPhoto(emptyPhotoUpload());
     return discard;
-  }, [token, discard]);
+  }, [token, endpoint, ownerId, discard]);
 
   async function send(file: File) {
     if (request.current) return;
@@ -120,18 +121,22 @@ function usePhotoUpload(token: string) {
     const body = new FormData();
     body.append('file', file);
     try {
-      const result = await api<UploadedImage>('/blog/images', { method: 'POST', body, signal: controller.signal }, 45000);
+      const result = await api<UploadedImage>(endpoint, { method: 'POST', body, signal: controller.signal }, 45000);
       if (!active()) return;
       if (!result || typeof result.objectKey !== 'string' || !result.objectKey.trim() || typeof result.url !== 'string' || !result.url.trim()) {
         throw new Error('上传结果缺少图片地址，请稍后重试');
       }
       const address = new URL(result.url);
       if (address.protocol !== 'http:' && address.protocol !== 'https:') throw new Error('图片预览地址不可用，请稍后重试');
+      // Avatar keys must match the authenticated owner's upload directory.
+      if (endpoint === '/user/avatar' && (!ownerId || !new RegExp(
+        '^avatar/' + ownerId + '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(jpg|png)$'
+      ).test(result.objectKey))) throw new Error('上传结果与当前账号不一致，请重新上传');
       setPhoto({ preview: result.url, uploaded: result, phase: 'success', error: '', retryable: false, previewUnavailable: false });
     } catch (error) {
       if (!active()) return;
       const retryable = !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
-      const message = error instanceof ApiError && error.status === 413 ? '图片或上传请求过大，请选择不超过 5MB 的照片' : (error as Error).message;
+      const message = error instanceof ApiError && error.status === 413 ? '图片或上传请求过大，请选择不超过 5MB 的照片' : endpoint === '/user/avatar' && error instanceof ApiError && error.status === 404 ? '头像上传暂不可用，请稍后再试。你可以先修改昵称。' : (error as Error).message;
       setPhoto({ preview: localPreview.current, uploaded: null, phase: 'error', error: message, retryable, previewUnavailable: false });
     } finally {
       if (request.current === controller) request.current = null;
@@ -824,6 +829,200 @@ function FollowPeople({ mode, token, current, viewerId, identityLoading, identit
   </section>;
 }
 
+
+function ProfileAvatar({ source, large = false, onError }: { source: string | null; large?: boolean; onError?: () => void }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [source]);
+  return <span className={'profile-avatar' + (large ? ' profile-edit-avatar' : '')}>
+    {source && !failed ? <img src={source} alt={large ? '头像预览' : '当前头像'} onError={() => { setFailed(true); onError?.(); }} /> : <PersonIcon aria-hidden="true" />}
+  </span>;
+}
+
+function validProfile(value: unknown): value is User {
+  if (!value || typeof value !== 'object') return false;
+  const user = value as Partial<User>;
+  return Boolean(positiveUserId(user.id)) && typeof user.nickName === 'string' && (user.icon === null || typeof user.icon === 'string');
+}
+
+function matchesProfileUpdate(user: User, desired: ProfileUpdate) {
+  if (user.nickName !== desired.nickName) return false;
+  if (desired.avatarObjectKey === null) return true;
+  if (desired.avatarObjectKey === '') return !user.icon?.trim();
+  if (!user.icon) return false;
+  try {
+    return decodeURIComponent(new URL(user.icon, API_BASE).pathname).endsWith('/' + desired.avatarObjectKey);
+  } catch { return false; }
+}
+
+function EditProfile({ token, onBack, onLogin, onSaved }: {
+  token: string; onBack: () => void; onLogin: () => void; onSaved: () => void;
+}) {
+  const profile = useResource<User>(token ? '/user/me' : null, token);
+  const user = validProfile(profile.data) ? profile.data : null;
+  if (token && user && !profile.loading && !profile.error) {
+    return <ProfileForm key={token + ':' + positiveUserId(user.id)} user={user} token={token} onBack={onBack} onSaved={onSaved} />;
+  }
+  const error = profile.error || (token && !profile.loading && !user ? '个人资料返回格式不正确，请重新加载' : '');
+  return <>
+    <header className="page-header profile-edit-header"><button type="button" onClick={onBack} aria-label="返回我的"><ArrowLeftIcon /></button><span>编辑资料</span><span /></header>
+    <MobileScroll className="m1-scroll full-page profile-edit-scroll">
+      {token ? <RequestState loading={profile.loading} error={error} onRetry={profile.reload} /> : <div className="empty-state"><PersonIcon /><h2>登录后编辑资料</h2><p>设置头像和昵称，让大家认识你。</p><button type="button" className="primary-button" onClick={onLogin}>去登录</button></div>}
+    </MobileScroll>
+  </>;
+}
+
+function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: string; onBack: () => void; onSaved: () => void }) {
+  const keyboard = useKeyboard();
+  const userId = positiveUserId(user.id)!;
+  const upload = usePhotoUpload(token, '/user/avatar', userId);
+  const input = useRef<HTMLInputElement>(null);
+  const [nickName, setNickName] = useState(user.nickName);
+  const [avatarMode, setAvatarMode] = useState<'keep' | 'replace' | 'remove'>('keep');
+  const [phase, setPhase] = useState<'idle' | 'saving' | 'uncertain' | 'checking'>('idle');
+  const [error, setError] = useState('');
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  const pending = useRef<ProfileUpdate | null>(null);
+  const busy = phase === 'saving' || phase === 'checking';
+  const locked = busy || phase === 'uncertain';
+  const normalizedName = nickName.trim();
+  const nameLength = Array.from(normalizedName).length;
+  const nameError = nameLength < 1 ? '请输入昵称' : nameLength > 20 ? '昵称不能超过 20 个字符' : '';
+  const dirty = nickName !== user.nickName || avatarMode !== 'keep';
+  const uploading = upload.photo.phase === 'uploading';
+  const ready = avatarMode !== 'replace' || (upload.photo.phase === 'success' && upload.photo.uploaded !== null);
+  const avatar = avatarMode === 'remove' ? null : avatarMode === 'replace' ? upload.photo.preview || null : user.icon;
+
+  useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
+
+  function back() {
+    if (request.current) return;
+    keyboard.hide();
+    if (dirty || phase === 'uncertain') setDiscardOpen(true);
+    else onBack();
+  }
+
+  function chooseAvatar() {
+    if (locked || uploading) return;
+    keyboard.hide();
+    input.current?.click();
+  }
+
+  function changeAvatar(mode: 'keep' | 'remove') {
+    if (locked) return;
+    keyboard.hide();
+    upload.clear();
+    setAvatarMode(mode);
+    setError('');
+  }
+
+  async function save(retry = false) {
+    keyboard.hide();
+    if (request.current || uploading) return;
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (nameError) { setError(nameError); return; }
+    if (!ready) { setError('请完成头像上传，或选择使用原头像'); return; }
+    const desired: ProfileUpdate = retry && pending.current ? pending.current : {
+      nickName: normalizedName,
+      avatarObjectKey: avatarMode === 'keep' ? null : avatarMode === 'remove' ? '' : upload.photo.uploaded!.objectKey
+    };
+    const controller = new AbortController();
+    request.current = controller;
+    pending.current = desired;
+    setPhase('saving');
+    setError('');
+    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    try {
+      await api<void>('/user/me', { method: 'PUT', body: JSON.stringify(desired), signal: controller.signal });
+      if (active()) onSaved();
+    } catch (caught) {
+      if (!active()) return;
+      const uncertain = !(caught instanceof ApiError) || caught.status === 0 || caught.status >= 500 || caught.status === 200;
+      setPhase(uncertain ? 'uncertain' : 'idle');
+      if (!uncertain) pending.current = null;
+      setError(uncertain ? '保存结果暂未确认，请先刷新当前资料核对。' : (caught as Error).message);
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  async function checkSaved() {
+    keyboard.hide();
+    if (request.current || !pending.current || localStorage.getItem(TOKEN_KEY) !== token) return;
+    const desired = pending.current;
+    const controller = new AbortController();
+    request.current = controller;
+    setPhase('checking');
+    setError('');
+    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    try {
+      const fresh = await api<User>('/user/me', { signal: controller.signal });
+      if (!active()) return;
+      if (!validProfile(fresh) || positiveUserId(fresh.id) !== userId) throw new Error('个人资料返回格式不正确，请重新查询');
+      if (matchesProfileUpdate(fresh, desired)) { onSaved(); return; }
+      pending.current = null;
+      setPhase('idle');
+      setError('当前资料与本次修改尚不一致，请核对后重新保存。');
+    } catch (caught) {
+      if (!active()) return;
+      setPhase('uncertain');
+      setError('暂时无法确认保存结果：' + (caught as Error).message);
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  return <>
+    <header className="page-header profile-edit-header">
+      <button type="button" onClick={back} disabled={busy} aria-label="返回我的"><ArrowLeftIcon /></button>
+      <span>编辑资料</span>
+      <button type="submit" form="profile-edit-form" className="text-button profile-save" disabled={locked || uploading || !ready || !dirty || Boolean(nameError)}>{phase === 'saving' ? '保存中…' : '保存'}</button>
+    </header>
+    <MobileScroll className="m1-scroll full-page profile-edit-scroll">
+      <form id="profile-edit-form" className="profile-edit-body" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <section className="profile-avatar-section" aria-label="修改头像">
+          <input ref={input} className="visually-hidden" type="file" accept="image/jpeg,image/png" aria-label="选择头像文件" disabled={locked || uploading} onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (!file || locked) return;
+            setAvatarMode('replace');
+            setError('');
+            upload.select(file);
+          }} />
+          <button type="button" className="profile-avatar-picker" aria-label="选择新头像" aria-describedby="avatar-upload-feedback" onClick={chooseAvatar} disabled={locked || uploading} aria-busy={uploading}>
+            <ProfileAvatar source={avatar} large onError={avatarMode === 'replace' ? upload.previewFailed : undefined} />
+            <span className="profile-camera-badge"><CameraIcon aria-hidden="true" /></span>
+          </button>
+          <button type="button" className="text-button profile-avatar-change" onClick={chooseAvatar} disabled={locked || uploading}>{uploading ? '头像上传中…' : '更换头像'}</button>
+          <small>JPEG、PNG · 最大 5MB</small>
+          <div id="avatar-upload-feedback" className={'photo-upload-feedback ' + upload.photo.phase} aria-live="polite">
+            {avatarMode === 'replace' && uploading && <span role="status">正在上传头像…</span>}
+            {avatarMode === 'replace' && upload.photo.phase === 'success' && <><span className="photo-upload-success"><CheckIcon />新头像已上传，保存后生效</span>{upload.photo.previewUnavailable && <span>在线预览暂时无法加载，当前显示本地照片。</span>}</>}
+            {avatarMode === 'replace' && upload.photo.phase === 'error' && <><span role="alert">{upload.photo.error}</span>{upload.photo.retryable && <button type="button" className="outline-button" disabled={locked} onClick={upload.retry}>重试上传头像</button>}</>}
+            {avatarMode === 'remove' && <span role="status">保存后将恢复默认头像</span>}
+          </div>
+          <div className="profile-avatar-tools">
+            {avatarMode !== 'keep' && <button type="button" className="text-button" disabled={locked} onClick={() => changeAvatar('keep')}>使用原头像</button>}
+            {(Boolean(user.icon) || avatarMode === 'replace') && avatarMode !== 'remove' && <button type="button" className="text-button" disabled={locked} onClick={() => changeAvatar('remove')}>恢复默认头像</button>}
+          </div>
+        </section>
+        <section className="profile-fields" aria-label="个人资料">
+          <label htmlFor="profile-nickname">昵称</label>
+          <KeyboardInput id="profile-nickname" autoComplete="nickname" value={nickName} maxLength={80} disabled={locked} aria-invalid={Boolean(nameError)} aria-describedby="profile-nickname-hint" placeholder="给自己起个昵称" onChange={event => { setNickName(event.target.value); setError(''); }} />
+          <div className="profile-field-hint" id="profile-nickname-hint"><span className={nameError ? 'profile-field-invalid' : ''}>{nameError || '1～20 个字符'}</span><span>{nameLength} / 20</span></div>
+          <dl className="profile-readonly"><div><dt>账号 ID</dt><dd>{userId}<small>不可修改</small></dd></div></dl>
+        </section>
+        {error && <p className="profile-form-error" role="alert">{error}</p>}
+        {(phase === 'uncertain' || phase === 'checking') && <section className="profile-save-check" aria-label="确认资料保存结果"><strong>先确认这次保存结果</strong><p>修改可能已经生效，刷新后会核对当前资料。</p><button type="button" className="outline-button" disabled={busy} onClick={() => void checkSaved()}>{phase === 'checking' ? '正在确认…' : '刷新当前资料'}</button><button type="button" className="text-button" disabled={busy} onClick={() => void save(true)}>重新保存这份资料</button></section>}
+        <p className="profile-edit-note">修改完成后，点击右上角「保存」。</p>
+      </form>
+    </MobileScroll>
+    <BottomSheet open={discardOpen} onOpenChange={setDiscardOpen} title={phase === 'uncertain' ? '返回前确认一下' : '放弃这次修改？'} description={phase === 'uncertain' ? '保存结果还未确认，返回后请刷新个人资料核对。' : '修改还没有保存，返回后不会保留本次编辑。'} snap={0.38}>
+      <div className="profile-discard-actions"><button type="button" className="coral-button" onClick={() => setDiscardOpen(false)}>继续编辑</button><button type="button" className="outline-button" onClick={() => { keyboard.hide(); setDiscardOpen(false); onBack(); }}>{phase === 'uncertain' ? '返回并刷新资料' : '放弃修改并返回'}</button></div>
+    </BottomSheet>
+  </>;
+}
+
 export default function Prototype() {
   const keyboard = useKeyboard();
   const [page, setPage] = useState<Page>('home');
@@ -884,6 +1083,7 @@ export default function Prototype() {
   function navigate(destination: Page) { keyboard.hide(); currentPage.current = destination; setPage(destination); }
   function openShop(id: number) { setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
+  function openEditProfile() { if (!token) { openLogin('editProfile'); return; } navigate('editProfile'); }
   function startNewNote() { if (!token) { openLogin('publish'); return; } navigate('publish'); }
   function openPublishedStory(id: string, returnTo: 'home' | 'myNotes' = 'home') { setSelectedBlogId(id); setStoryReturn(returnTo); navigate('story'); }
   function openMyNotes() {
@@ -1041,7 +1241,7 @@ export default function Prototype() {
   return <div className="m1-app">
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => { me.reload(); navigate('profile'); }} onLogin={() => openLogin('editProfile')} onSaved={() => { me.reload(); navigate('profile'); flash('个人资料已保存'); }} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
@@ -1080,7 +1280,7 @@ export default function Prototype() {
       </>}
 
       {page === 'profile' && <>
-        <header className="profile-header"><span className="eyebrow">YOUR LITTLE CORNER</span><h1>我的巷里<span className="accent-dot">.</span></h1><div className="profile-identity"><div className="profile-avatar"><PersonIcon /></div><span><strong>{me.data?.nickName || (token ? me.error ? '暂时无法加载个人信息' : '正在确认登录状态' : '欢迎来巷里走走')}</strong><small>{me.data ? `账号 ID：${me.data.id}` : token ? me.error ? '请重试下方请求' : '连接你的巷里账号' : '登录后，开启你的巷里生活'}</small></span>{!token && <button className="outline-button" onClick={() => openLogin()}>登录</button>}</div></header>
+        <header className="profile-header"><span className="eyebrow">YOUR LITTLE CORNER</span><h1>我的巷里<span className="accent-dot">.</span></h1><button type="button" className="profile-identity profile-identity-button" onClick={openEditProfile} aria-label={token ? '编辑个人资料' : '登录后编辑个人资料'}><ProfileAvatar source={me.data?.icon || null} /><span className="profile-identity-copy"><strong>{me.data?.nickName || (token ? me.error ? '暂时无法加载个人信息' : '正在确认登录状态' : '欢迎来巷里走走')}</strong><small>{me.data ? '账号 ID：' + me.data.id : token ? me.error ? '请重试下方请求' : '连接你的巷里账号' : '登录后，开启你的巷里生活'}</small></span><span className="profile-edit-link">{token ? <><Pencil1Icon aria-hidden="true" />编辑资料</> : '登录'}<ChevronRightIcon aria-hidden="true" /></span></button></header>
         {token && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
         <div className="profile-menu"><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('following')}><PersonIcon /> 我的关注 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('followers')}><HeartIcon /> 我的粉丝 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
       </>}
@@ -1128,7 +1328,7 @@ export default function Prototype() {
       </>}
 
       {page === 'messages' && <><header className="sub-header"><div><span className="eyebrow">STAY IN TOUCH</span><h1>消息<span className="accent-dot">.</span></h1></div></header><div className="empty-state"><ChatBubbleIcon /><h2>期待新的问候</h2><p>消息功能正在准备中。</p><button className="primary-button" onClick={() => navigate('nearby')}>先去逛逛小店</button></div></>}
-    </MobileScroll>
+    </MobileScroll>}
     {showNav && <nav className="bottom-nav" aria-label="主导航"><button className={page === 'home' ? 'active' : ''} onClick={() => navigate('home')}><HomeIcon /><span>首页</span></button><button className={page === 'nearby' ? 'active' : ''} onClick={() => navigate('nearby')}><MapPinIcon /><span>附近</span></button><button className="nav-create" onClick={() => navigate('publish')} aria-label="记录故事"><PlusIcon /></button><button className={page === 'messages' ? 'active' : ''} onClick={() => navigate('messages')}><ChatBubbleIcon /><span>消息</span></button><button className={page === 'profile' ? 'active' : ''} onClick={() => navigate('profile')}><PersonIcon /><span>我的</span></button></nav>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
