@@ -10,9 +10,11 @@ import com.m1kasa.m1kasauserservice.entity.User;
 import com.m1kasa.m1kasauserservice.mapper.FollowMapper;
 import com.m1kasa.m1kasauserservice.mapper.UserMapper;
 import com.m1kasa.m1kasauserservice.service.FollowService;
+import com.m1kasa.m1kasauserservice.service.UserService;
 import com.m1kasa.user.api.FollowPageDTO;
 import com.m1kasa.user.api.FollowStateDTO;
 import com.m1kasa.user.api.FollowUserDTO;
+import com.m1kasa.user.api.UserDTO;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -28,12 +30,13 @@ public class FollowServiceImpl implements FollowService {
     private final FollowMapper followMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final FollowCacheInitializer initializer;
-
-    public FollowServiceImpl(UserMapper userMapper, FollowMapper followMapper, StringRedisTemplate stringRedisTemplate, FollowCacheInitializer initializer) {
+    private final UserService userService;
+    public FollowServiceImpl(UserMapper userMapper, FollowMapper followMapper, StringRedisTemplate stringRedisTemplate, FollowCacheInitializer initializer, UserService userService) {
         this.userMapper = userMapper;
         this.followMapper = followMapper;
         this.stringRedisTemplate = stringRedisTemplate;
         this.initializer = initializer;
+        this.userService = userService;
     }
 
     @Override
@@ -194,19 +197,13 @@ public class FollowServiceImpl implements FollowService {
 
             listedUserIds.add(listedUserId);
         }
-        //5.一次性查询当前页所有用户的公开资料
-        List<User> users = userMapper.selectList(
-                new LambdaQueryWrapper<User>()
-                        .select(
-                                User::getId,
-                                User::getNickName,
-                                User::getIcon
-                        )
-                        .in(User::getId, listedUserIds)
-        );
-        Map<Long,User> usersById=new HashMap<>();
-        for (User user : users) {
-            usersById.put(user.getId(),user);
+        // 5. 批量获取当前页用户资料，头像已转换成访问链接
+        List<UserDTO> users = userService.listByIds(listedUserIds);
+
+        Map<Long, UserDTO> usersById = new HashMap<>();
+
+        for (UserDTO user : users) {
+            usersById.put(user.id(), user);
         }
         //6.确定当前用户关注了列表中的哪些人
         Set<Long> followedUserIds=new HashSet<>();
@@ -227,7 +224,6 @@ public class FollowServiceImpl implements FollowService {
         }
 
         //7.按原来的关系顺序组装结果
-        // 7. 按原来的关系顺序组装结果
         List<FollowUserDTO> records = new ArrayList<>();
 
         for (Follow relation : relations) {
@@ -235,18 +231,17 @@ public class FollowServiceImpl implements FollowService {
                     ? relation.getFollowUserId()
                     : relation.getUserId();
 
-            User user = usersById.get(listedUserId);
-
+            UserDTO user = usersById.get(listedUserId);
             String nickName =
-                    user != null && StringUtils.hasText(user.getNickName())
-                            ? user.getNickName()
+                    user != null && StringUtils.hasText(user.nickName())
+                            ? user.nickName()
                             : "未知用户";
 
             records.add(
                     new FollowUserDTO(
                             listedUserId.toString(),
                             nickName,
-                            user == null ? null : user.getIcon(),
+                            user == null ? null : user.icon(),
                             relation.getCreateTime(),
                             followedUserIds.contains(listedUserId)
                     )
