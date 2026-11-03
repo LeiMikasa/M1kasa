@@ -11,4 +11,9 @@ public interface BlogQueryService {
       int current,
       int size
     );
+    BlogPageDTO findUserBlogs(
+            Long userId,
+            int current,
+            int size
+    );
 }

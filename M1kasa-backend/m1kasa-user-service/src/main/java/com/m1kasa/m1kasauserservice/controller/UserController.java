@@ -1,9 +1,11 @@
 package com.m1kasa.m1kasauserservice.controller;
 
+import com.m1kasa.common.auth.annotation.AllowAnonymous;
 import com.m1kasa.common.base.context.UserContext;
 import com.m1kasa.common.dto.Result;
 import com.m1kasa.m1kasauserservice.service.UserService;
 import com.m1kasa.user.api.UserDTO;
+import com.m1kasa.user.api.UserProfileDTO;
 import com.m1kasa.user.api.UserProfileUpdateRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,6 +119,37 @@ public class UserController {
                     .body(Result.fail(
                             "资料保存结果暂未确认，请刷新个人资料后确认"
                     ));
+        }
+    }
+    @AllowAnonymous
+    @GetMapping("/public/{userId}")
+    public ResponseEntity<Result<UserProfileDTO>> getPublicProfile(
+            @PathVariable("userId") Long userId
+    ) {
+        try {
+            UserProfileDTO profile =
+                    userService.getPublicProfile(userId);
+
+            if (profile == null) {
+                return ResponseEntity.status(404)
+                        .body(Result.fail("用户不存在"));
+            }
+
+            return ResponseEntity.ok(Result.ok(profile));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalStateException | DataAccessException ex) {
+            log.error(
+                    "查询用户主页失败，userId={}",
+                    userId,
+                    ex
+            );
+
+            return ResponseEntity.status(503)
+                    .body(Result.fail("用户主页暂不可用，请稍后重试"));
         }
     }
 }

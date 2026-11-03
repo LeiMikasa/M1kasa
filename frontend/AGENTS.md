@@ -74,3 +74,6 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 
 - On the My page, the avatar and nickname area is one accessible entry to Edit Profile, with a visible edit hint. Logged-out users go through login before editing.
 - Keep profile editing on a separate screen in the existing visual style. Avatar selection uploads a preview; nickname/avatar changes take effect only after Save.
+- Hide static image-format/size and nickname-length guidance, and omit account ID from the Edit Profile screen.
+- Public user pages show avatar, nickname, follow/follower counts and paginated published notes, with follow actions gated by login. Preserve the existing avatar-to-edit entry and provide a separate My Profile entry.
+- Notes support 1–9 ordered photos: the first is the cover; publishing waits for every selected upload to succeed. Detail galleries use Carousel and retain compatibility with legacy single-cover responses.

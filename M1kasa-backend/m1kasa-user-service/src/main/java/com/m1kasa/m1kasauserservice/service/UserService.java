@@ -1,6 +1,7 @@
 package com.m1kasa.m1kasauserservice.service;
 
 import com.m1kasa.user.api.UserDTO;
+import com.m1kasa.user.api.UserProfileDTO;
 import com.m1kasa.user.api.UserProfileUpdateRequest;
 
 import java.util.List;
@@ -11,4 +12,6 @@ public interface UserService {
     List<UserDTO> listByIds(List<Long> ids);
 
     boolean updateProfile(UserProfileUpdateRequest request);
+
+    UserProfileDTO getPublicProfile(Long userId);
 }

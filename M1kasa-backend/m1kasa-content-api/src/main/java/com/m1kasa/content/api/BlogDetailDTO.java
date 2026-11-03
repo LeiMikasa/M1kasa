@@ -1,6 +1,7 @@
 package com.m1kasa.content.api;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record BlogDetailDTO(
         Long id,
@@ -10,6 +11,7 @@ public record BlogDetailDTO(
         String authorIcon,
         String title,
         String coverImage,
+        List<String> imageUrls,
         String content,
         Integer liked,
         Integer comments,

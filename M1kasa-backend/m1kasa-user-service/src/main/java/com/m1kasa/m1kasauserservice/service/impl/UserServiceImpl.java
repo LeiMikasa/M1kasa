@@ -4,10 +4,13 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.m1kasa.common.base.context.UserContext;
 import com.m1kasa.common.storage.MinioTemplate;
+import com.m1kasa.m1kasauserservice.entity.Follow;
 import com.m1kasa.m1kasauserservice.entity.User;
+import com.m1kasa.m1kasauserservice.mapper.FollowMapper;
 import com.m1kasa.m1kasauserservice.mapper.UserMapper;
 import com.m1kasa.m1kasauserservice.service.UserService;
 import com.m1kasa.user.api.UserDTO;
+import com.m1kasa.user.api.UserProfileDTO;
 import com.m1kasa.user.api.UserProfileUpdateRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -26,10 +29,12 @@ public class UserServiceImpl implements UserService {
 
     private final UserMapper userMapper;
     private final MinioTemplate minioTemplate;
+    private final FollowMapper followMapper;
 
-    public UserServiceImpl(UserMapper userMapper, MinioTemplate minioTemplate) {
+    public UserServiceImpl(UserMapper userMapper, MinioTemplate minioTemplate, FollowMapper followMapper) {
         this.userMapper = userMapper;
         this.minioTemplate = minioTemplate;
+        this.followMapper = followMapper;
     }
 
     @Override
@@ -117,6 +122,40 @@ public class UserServiceImpl implements UserService {
         // 此时再确认用户是否存在，避免误判成保存失败
         return rows > 0 || userMapper.selectById(userId) != null;
     }
+
+    @Override
+    public UserProfileDTO getPublicProfile(Long userId) {
+        //1.校验被查看的用户ID
+        if (userId==null||userId<=0){
+            throw new IllegalArgumentException("用户ID必须大于0");
+        }
+        //2.复用现在查询，头像已经转换为访问链接
+        UserDTO user = getById(userId);
+        if (user==null){
+            return null;
+        }
+        //3.查询这个用户关注了多少人
+        long followingCount = followMapper.selectCount(
+                new LambdaQueryWrapper<Follow>()
+                        .eq(Follow::getUserId, userId)
+        );
+        // 4. 查询多少人关注了这个用户
+        long followersCount = followMapper.selectCount(
+                new LambdaQueryWrapper<Follow>()
+                        .eq(Follow::getFollowUserId, userId)
+        );
+
+        // 5. 组装公开主页资料
+        return new UserProfileDTO(
+                user.id().toString(),
+                user.nickName(),
+                user.icon(),
+                followingCount,
+                followersCount
+        );
+
+    }
+
     private String validateAvatar(Long userId, String objectKey) {
         // 没提交新头像：保留原头像
         if (objectKey == null) {

@@ -7,6 +7,8 @@ import com.m1kasa.common.dto.Result;
 import com.m1kasa.common.storage.MinioTemplate;
 import com.m1kasa.content.api.*;
 import com.m1kasa.m1kasacontentservice.entity.Blog;
+import com.m1kasa.m1kasacontentservice.entity.BlogImage;
+import com.m1kasa.m1kasacontentservice.mapper.BlogImageMapper;
 import com.m1kasa.m1kasacontentservice.mapper.BlogMapper;
 import com.m1kasa.m1kasacontentservice.service.BlogQueryService;
 import com.m1kasa.user.api.UserDTO;
@@ -27,11 +29,12 @@ public class BlogQueryServiceImpl implements BlogQueryService {
     private final BlogMapper blogMapper;
     private final UserClient userClient;
     private final MinioTemplate minioTemplate;
-
-    public BlogQueryServiceImpl(BlogMapper blogMapper, UserClient userClient, MinioTemplate minioTemplate) {
+    private final BlogImageMapper blogImageMapper;
+    public BlogQueryServiceImpl(BlogMapper blogMapper, UserClient userClient, MinioTemplate minioTemplate, BlogImageMapper blogImageMapper) {
         this.blogMapper = blogMapper;
         this.userClient = userClient;
         this.minioTemplate = minioTemplate;
+        this.blogImageMapper = blogImageMapper;
     }
 
     @Override
@@ -60,41 +63,64 @@ public class BlogQueryServiceImpl implements BlogQueryService {
                 filter(user -> user != null && blog.getUserId().equals(user.id()))
                 .findFirst()
                 .orElse(null);
-        String coverImageUrl = minioTemplate.getPresignedGetUrl(
-                blog.getCoverImage(),
-                IMAGE_URL_EXPIRY_SECONDS
-        );
+        // 查询全部图片链接
+        List<String> imageUrls = findImageUrls(blog);
+        // 第一张图片作为封面
+        String coverImageUrl = imageUrls.isEmpty()
+                ? null
+                : imageUrls.get(0);
+
         return new BlogDetailDTO(
                 blog.getId(),
                 blog.getShopId(),
                 blog.getUserId(),
-                author==null?"未知用户":author.nickName(),
-                author==null?null:author.icon(),
+                author == null ? "未知用户" : author.nickName(),
+                author == null ? null : author.icon(),
                 blog.getTitle(),
                 coverImageUrl,
+                imageUrls,
                 blog.getContent(),
                 blog.getLiked(),
                 blog.getComments(),
                 blog.getCreateTime()
         );
+
     }
 
     @Override
     public BlogPageDTO findMyBlogs(int current, int size) {
-        //1.获取当前用户身份
-        Long userId= UserContext.getUserId();
+        Long userId = UserContext.getUserId();
 
-        if (userId==null||userId<=0){
+        if (userId == null || userId <= 0) {
             throw new IllegalStateException("当前用户上下文缺失");
         }
-        //2.校验分页参数
-        if (current<1||size<1||size>50){
-            throw new IllegalArgumentException("页码必须大于0，每页条数必须在1到50之间");
+
+        // 我的笔记：把当前登录用户 ID 传给共用查询
+        return findUserBlogs(userId, current, size);
+    }
+
+    @Override
+    public BlogPageDTO findUserBlogs(
+            Long userId,
+            int current,
+            int size
+    ) {
+        // 1. 校验作者 ID 和分页参数
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("用户 ID 必须大于 0");
         }
-        //3.创建分页对象
-        Page<Blog> page=new Page<>(current,size);
-        //4.只查询当前用户已发布的笔记
-        LambdaQueryWrapper<Blog> query =
+
+        if (current < 1 || size < 1 || size > 50) {
+            throw new IllegalArgumentException(
+                    "页码必须大于 0，每页条数必须在 1～50 之间"
+            );
+        }
+
+        // 2. 分页查询指定作者已发布的笔记
+        Page<Blog> page = new Page<>(current, size);
+
+        blogMapper.selectPage(
+                page,
                 new LambdaQueryWrapper<Blog>()
                         .select(
                                 Blog::getId,
@@ -106,22 +132,38 @@ public class BlogQueryServiceImpl implements BlogQueryService {
                         )
                         .eq(Blog::getUserId, userId)
                         .eq(Blog::getStatus, PUBLISHED)
-                        .orderByDesc(Blog::getCreateTime)
-                        .orderByDesc(Blog::getId);
-        blogMapper.selectPage(page, query);
-        //5.将实体转换为DTO
-        List<BlogSummaryDTO> records = page.getRecords().stream().map(blog -> new BlogSummaryDTO(
-                blog.getId().toString(),
-                blog.getTitle(),
-                minioTemplate.getPresignedGetUrl(
-                        blog.getCoverImage(),
-                        IMAGE_URL_EXPIRY_SECONDS
-                ),
-                blog.getLiked(),
-                blog.getComments(),
-                blog.getCreateTime()
-        )).toList();
-        // 6. 返回当前页和分页信息
+                        .orderByDesc(
+                                Blog::getCreateTime,
+                                Blog::getId
+                        )
+        );
+
+        // 3. 将数据库实体转换为返回 DTO
+        List<BlogSummaryDTO> records = page.getRecords()
+                .stream()
+                .map(blog -> {
+                    String coverImageUrl = null;
+
+                    if (StringUtils.hasText(blog.getCoverImage())) {
+                        coverImageUrl =
+                                minioTemplate.getPresignedGetUrl(
+                                        blog.getCoverImage(),
+                                        IMAGE_URL_EXPIRY_SECONDS
+                                );
+                    }
+
+                    return new BlogSummaryDTO(
+                            blog.getId().toString(),
+                            blog.getTitle(),
+                            coverImageUrl,
+                            blog.getLiked() == null ? 0 : blog.getLiked(),
+                            blog.getComments() == null ? 0 : blog.getComments(),
+                            blog.getCreateTime()
+                    );
+                })
+                .toList();
+
+        // 4. 返回记录和分页信息
         return new BlogPageDTO(
                 records,
                 page.getTotal(),
@@ -241,6 +283,44 @@ public class BlogQueryServiceImpl implements BlogQueryService {
                 page.getCurrent(),
                 page.getSize()
         );
+    }
+    private List<String> findImageUrls(Blog blog){
+        //1.查询这篇笔记的图片，按顺序排列
+        List<BlogImage> images = blogImageMapper.selectList(
+                new LambdaQueryWrapper<BlogImage>()
+                        .select(
+                                BlogImage::getObjectKey,
+                                BlogImage::getSortOrder
+                        )
+                        .eq(BlogImage::getBlogId, blog.getId())
+                        .orderByAsc(BlogImage::getSortOrder)
+        );
+        List<String> objectKeys;
+        //2.兼容旧笔记，没有图片明细时，使用原来的封面
+        if (images.isEmpty()){
+            objectKeys = StringUtils.hasText(blog.getCoverImage())
+                    ? List.of(blog.getCoverImage())
+                    : List.of();
+        }else {
+            objectKeys = images.stream()
+                    .map(BlogImage::getObjectKey)
+                    .toList();
+        }
+        // 3. 把文件路径转换成临时访问链接
+        return objectKeys.stream()
+                .map(key -> {
+                    if (!StringUtils.hasText(key)) {
+                        throw new IllegalStateException(
+                                "笔记图片记录缺少文件路径"
+                        );
+                    }
+
+                    return minioTemplate.getPresignedGetUrl(
+                            key,
+                            IMAGE_URL_EXPIRY_SECONDS
+                    );
+                })
+                .toList();
     }
 
 }

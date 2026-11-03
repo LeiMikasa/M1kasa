@@ -60,9 +60,14 @@ public class BlogController {
             return ResponseEntity.status(502)
                     .body(Result.fail("查询作者资料失败，请稍后重试"));
 
-        } catch (IllegalStateException ex) {
-            return ResponseEntity.status(502)
-                    .body(Result.fail(ex.getMessage()));
+        } catch (IllegalStateException | DataAccessException ex) {
+            log.error("查询笔记详情失败，blogId={}", id, ex);
+
+            return ResponseEntity
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Result.fail(
+                            "笔记详情暂不可用，请稍后重试"
+                    ));
         }
     }
     @PostMapping(
@@ -93,14 +98,13 @@ public class BlogController {
                             "发布暂不可用，请稍后重试"
                     ));
 
-        } catch (DataAccessException ex) {
-            // 数据库异常只记录到服务端日志
-            log.error("保存笔记失败", ex);
+        } catch (DataAccessException | TransactionException ex) {
+            log.error("发布笔记数据库事务失败", ex);
 
             return ResponseEntity
-                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Result.fail(
-                            "笔记保存失败，请稍后重试"
+                            "发布结果暂未确认，请先查看我的笔记"
                     ));
         }
     }
@@ -241,6 +245,45 @@ public class BlogController {
 
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Result.fail("笔记广场暂不可用，请稍后重试"));
+        }
+    }
+    @AllowAnonymous
+    @GetMapping("/of/user/{userId}")
+    public ResponseEntity<Result<BlogPageDTO>> findUserBlogs(
+            @PathVariable("userId") Long userId,
+            @RequestParam(
+                    name = "current",
+                    defaultValue = "1"
+            ) int current,
+            @RequestParam(
+                    name = "size",
+                    defaultValue = "10"
+            ) int size
+    ) {
+        try {
+            BlogPageDTO page = blogQueryService.findUserBlogs(
+                    userId,
+                    current,
+                    size
+            );
+
+            return ResponseEntity.ok(Result.ok(page));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalStateException | DataAccessException ex) {
+            log.error(
+                    "查询用户笔记失败，userId={}, current={}, size={}",
+                    userId,
+                    current,
+                    size,
+                    ex
+            );
+
+            return ResponseEntity.status(503)
+                    .body(Result.fail("用户笔记暂不可用，请稍后重试"));
         }
     }
 

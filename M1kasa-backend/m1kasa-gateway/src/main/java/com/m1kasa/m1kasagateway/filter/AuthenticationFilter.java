@@ -121,6 +121,9 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
                     || "/blog/feed".equals(path)
                     //笔记详情，ID必须由数字组成
                     || path.matches("/blog/[0-9]+")
+                    || path.matches("/user/public/[0-9]+")
+                    // 指定作者的公开笔记分页
+                    || path.matches("/blog/of/user/[0-9]+")
                     ;
         }
 

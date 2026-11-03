@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, Pencil1Icon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
-import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard } from './mobile';
+import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, Pencil1Icon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
+import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useMobileDevice } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome';
+type StoryReturn = 'home' | 'myNotes' | 'userHome';
+type JourneySnapshot = { page: Page; blogId: string | null; storyReturn: StoryReturn; userId: string | null; notesPage: number; relationsReturn: 'profile' | 'userHome' };
+type PublicUserProfile = { userId: string; nickName: string; icon: string | null; followingCount: number; followersCount: number };
 type FeedTab = '推荐' | '附近' | '关注';
 type FollowListMode = 'following' | 'followers';
 type FollowPerson = { userId: string; nickName: string; icon: string | null; followTime: string | null; followed: boolean };
@@ -20,13 +23,14 @@ type BlogLike = { likedByMe: boolean; liked: number };
 type AuthorFollow = { targetUserId: string; followed: boolean };
 type AuthorFollowRequestState = { identity: string; data: AuthorFollow | null; phase: 'idle' | 'loading' | 'saving'; error: string; message: string; uncertainTarget: boolean | null };
 type BlogLikeState = { identity: string; data: BlogLike | null; phase: 'idle' | 'loading' | 'saving'; message: string; error: string; uncertainTarget: boolean | null };
-type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; content: string; liked: number; comments: number; createTime: string | null };
+type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; imageUrls?: string[]; content: string; liked: number; comments: number; createTime: string | null };
 type BlogSummary = { id: string; title: string; coverImage: string | null; liked: number | null; comments: number | null; createTime: string | null };
 type BlogPage = { records: BlogSummary[]; total: number; current: number; size: number };
 type BlogFeedItem = BlogSummary & { userId: string | null; authorName: string; authorIcon: string | null };
 type BlogFeedPage = { records: BlogFeedItem[]; total: number; current: number; size: number };
 type PublishPhase = 'idle' | 'submitting' | 'uncertain';
 type PhotoUploadState = { preview: string; uploaded: UploadedImage | null; phase: 'idle' | 'uploading' | 'success' | 'error'; error: string; retryable: boolean; previewUnavailable: boolean };
+type NotePhoto = { id: string; ownerId: string; file: File; fingerprint: string; localPreview: string; preview: string; uploaded: UploadedImage | null; phase: 'queued' | 'uploading' | 'success' | 'error'; error: string; retryable: boolean; previewUnavailable: boolean };
 type ReservationPhase = 'ready' | 'submitting' | 'accepted' | 'uncertain' | 'ordered';
 type ReservationMarker = { phase: 'accepted' | 'uncertain'; attemptId: string };
 
@@ -171,6 +175,171 @@ function usePhotoUpload(token: string, endpoint = '/blog/images', ownerId: strin
   }
 
   return { photo, select, retry, previewFailed, clear };
+}
+
+
+const MAX_NOTE_PHOTOS = 9;
+
+function useNotePhotos(token: string, ownerId: string | null) {
+  const [saved, setSaved] = useState<{token: string; photos: NotePhoto[]; error: string}>({token, photos: [], error: ''});
+  const items = useRef<NotePhoto[]>([]);
+  const selectionError = useRef('');
+  const controllers = useRef(new Map<string, AbortController>());
+  const epoch = useRef(0);
+  const currentToken = useRef(token);
+  currentToken.current = token;
+
+  const update = useCallback((change: (photos: NotePhoto[]) => NotePhoto[]) => {
+    items.current = change(items.current);
+    setSaved({token: currentToken.current, photos: items.current, error: selectionError.current});
+  }, []);
+  const dispose = useCallback(() => {
+    epoch.current += 1;
+    controllers.current.forEach(controller => controller.abort());
+    controllers.current.clear();
+    items.current.forEach(photo => URL.revokeObjectURL(photo.localPreview));
+    items.current = [];
+    selectionError.current = '';
+  }, []);
+  useEffect(() => {
+    dispose();
+    setSaved({token, photos: [], error: ''});
+    return dispose;
+  }, [token, dispose]);
+
+  function pump() {
+    if (!token || currentToken.current !== token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    while (controllers.current.size < 2) {
+      const photo = items.current.find(item => item.phase === 'queued');
+      if (!photo) return;
+      const controller = new AbortController();
+      const run = epoch.current;
+      controllers.current.set(photo.id, controller);
+      update(list => list.map(item => item.id === photo.id ? {...item, phase: 'uploading', error: '', retryable: false} : item));
+      void send(photo, controller, run);
+    }
+  }
+
+  async function send(photo: NotePhoto, controller: AbortController, run: number) {
+    const active = () => !controller.signal.aborted && epoch.current === run && currentToken.current === token
+      && localStorage.getItem(TOKEN_KEY) === token && controllers.current.get(photo.id) === controller;
+    const body = new FormData();
+    body.append('file', photo.file);
+    try {
+      const result = await api<UploadedImage>('/blog/images', {method: 'POST', body, signal: controller.signal}, 45000);
+      if (!active()) return;
+      const pattern = new RegExp('^blog/' + photo.ownerId + '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(jpg|png)$');
+      if (!result || typeof result.objectKey !== 'string' || !pattern.test(result.objectKey)
+          || typeof result.url !== 'string' || !/^https?:\/\//i.test(result.url)) {
+        throw new Error('上传结果与当前图片或账号不一致，请重新上传');
+      }
+      update(list => list.map(item => item.id === photo.id ? {...item, uploaded: result, preview: result.url, phase: 'success', error: '', previewUnavailable: false} : item));
+    } catch (caught) {
+      if (!active()) return;
+      const retryable = !(caught instanceof ApiError) || caught.status === 0 || caught.status >= 500;
+      const message = caught instanceof ApiError && caught.status === 413 ? '图片不能超过 5MB，请重新选择' : (caught as Error).message;
+      update(list => list.map(item => item.id === photo.id ? {...item, uploaded: null, preview: item.localPreview, phase: 'error', error: message, retryable} : item));
+    } finally {
+      if (controllers.current.get(photo.id) === controller) controllers.current.delete(photo.id);
+      if (epoch.current === run && currentToken.current === token) pump();
+    }
+  }
+
+  function reject(message: string) {
+    selectionError.current = message;
+    update(list => list);
+  }
+
+  function add(files: File[]) {
+    if (!files.length) return;
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token || !ownerId) { reject('请先确认登录状态后添加图片'); return; }
+    if (files.length + items.current.length > MAX_NOTE_PHOTOS) { reject('每篇笔记最多 9 张图片，还可以添加 ' + (MAX_NOTE_PHOTOS - items.current.length) + ' 张'); return; }
+    const seen = new Set(items.current.map(photo => photo.fingerprint));
+    const fingerprints: string[] = [];
+    for (const file of files) {
+      const reason = file.size === 0 ? '文件没有内容' : file.size > 5 * 1024 * 1024 ? '图片不能超过 5MB' : file.type && !['image/jpeg', 'image/png'].includes(file.type) ? '仅支持 JPEG、PNG 图片' : '';
+      if (reason) { reject(file.name + '：' + reason); return; }
+      const fingerprint = JSON.stringify([file.name, file.size, file.type, file.lastModified]);
+      if (seen.has(fingerprint)) { reject('已添加这张图片：' + file.name); return; }
+      seen.add(fingerprint);
+      fingerprints.push(fingerprint);
+    }
+    const additions: NotePhoto[] = files.map((file, index) => {
+      const localPreview = URL.createObjectURL(file);
+      return {id: crypto.randomUUID(), ownerId, file, fingerprint: fingerprints[index], localPreview, preview: localPreview, uploaded: null, phase: 'queued', error: '', retryable: false, previewUnavailable: false};
+    });
+    selectionError.current = '';
+    update(list => [...list, ...additions]);
+    pump();
+  }
+
+  function remove(id: string) {
+    const photo = items.current.find(item => item.id === id);
+    if (!photo) return;
+    controllers.current.get(id)?.abort();
+    controllers.current.delete(id);
+    URL.revokeObjectURL(photo.localPreview);
+    selectionError.current = '';
+    update(list => list.filter(item => item.id !== id));
+    pump();
+  }
+
+  function move(id: string, delta: number) {
+    update(list => {
+      const from = list.findIndex(item => item.id === id), to = from + delta;
+      if (from < 0 || to < 0 || to >= list.length) return list;
+      const next = [...list];
+      [next[from], next[to]] = [next[to], next[from]];
+      return next;
+    });
+  }
+
+  function retry(id: string) {
+    const photo = items.current.find(item => item.id === id);
+    if (!photo || photo.phase !== 'error' || !photo.retryable) return;
+    update(list => list.map(item => item.id === id ? {...item, phase: 'queued', error: '', retryable: false} : item));
+    pump();
+  }
+
+  function previewFailed(id: string) {
+    update(list => list.map(item => item.id !== id ? item : {...item,
+      preview: item.uploaded && item.preview === item.uploaded.url ? item.localPreview : '', previewUnavailable: true
+    }));
+  }
+
+  function clear() {
+    dispose();
+    setSaved({token: currentToken.current, photos: [], error: ''});
+  }
+
+  const photos = saved.token === token ? saved.photos : [];
+  return {photos, error: saved.token === token ? saved.error : '', add, remove, move, retry, previewFailed, clear,
+    busy: photos.some(photo => photo.phase === 'queued' || photo.phase === 'uploading'),
+    ready: photos.length > 0 && photos.every(photo => photo.phase === 'success' && photo.uploaded !== null)};
+}
+
+function NotePhotoGrid({upload, disabled, onChoose, token}: {upload: ReturnType<typeof useNotePhotos>; disabled: boolean; onChoose: () => void; token: string}) {
+  const {photos} = upload;
+  return <section className="note-photo-section" aria-label="笔记图片">
+    <div className="note-photo-heading"><strong>图片</strong><span>{photos.length} / 9</span></div>
+    <div className={'note-photo-grid' + (photos.length ? '' : ' is-empty')}>
+      {photos.map((photo, index) => <article className="note-photo-item" data-testid="note-photo" data-phase={photo.phase} data-file-name={photo.file.name} key={photo.id}>
+        <div className="note-photo-preview">
+          {photo.preview ? <img src={photo.preview} alt={'第 ' + (index + 1) + ' 张笔记图片'} decoding="async" onError={() => upload.previewFailed(photo.id)} /> : <span className="note-photo-unavailable"><CameraIcon /><small>预览暂不可用</small></span>}
+          <span className={'note-photo-position' + (index === 0 ? ' is-cover' : '')}>{index === 0 ? '封面' : index + 1}</span>
+          <button type="button" className="note-photo-remove" aria-label={'删除第' + (index + 1) + '张图片'} disabled={disabled} onClick={() => upload.remove(photo.id)}><Cross2Icon /></button>
+          {(photo.phase === 'queued' || photo.phase === 'uploading') && <span className="note-photo-progress" role="status">{photo.phase === 'uploading' && <i className="photo-upload-spinner" aria-hidden="true" />}{photo.phase === 'queued' ? '等待上传' : '上传中'}</span>}
+        </div>
+        <div className="note-photo-actions"><button type="button" aria-label={'前移第' + (index + 1) + '张图片'} disabled={disabled || index === 0} onClick={() => upload.move(photo.id, -1)}><ChevronLeftIcon /></button><button type="button" aria-label={'后移第' + (index + 1) + '张图片'} disabled={disabled || index === photos.length - 1} onClick={() => upload.move(photo.id, 1)}><ChevronRightIcon /></button></div>
+        {photo.phase === 'error' && <div className="note-photo-error"><p role="alert">{photo.error}</p>{photo.retryable && <button type="button" className="text-button" disabled={disabled} onClick={() => upload.retry(photo.id)}>重试上传</button>}</div>}
+        {photo.previewUnavailable && photo.phase === 'success' && <small className="note-photo-preview-note">已上传，在线预览暂不可用</small>}
+      </article>)}
+      {photos.length < MAX_NOTE_PHOTOS && <button type="button" className="note-photo-add" onClick={onChoose} disabled={disabled} aria-label={token ? '添加笔记图片' : '登录后添加笔记图片'}><PlusIcon /><span>{token ? '添加图片' : '登录后添加图片'}</span></button>}
+    </div>
+    <p className="note-photo-guide">第一张作为封面，可用箭头调整顺序。</p>
+    {upload.error && <p className="note-photo-selection-error" role="alert">{upload.error}</p>}
+    {upload.ready && <p className="note-photo-complete" role="status"><CheckIcon />已上传 {photos.length} 张图片，尚未发布</p>}
+  </section>;
 }
 
 function useResource<T>(path: string | null, identity = '') {
@@ -565,9 +734,9 @@ function useAuthorFollow(targetUserId: string | null, token: string, enabled: bo
   return { state, busy: state.phase !== 'idle', reload, setFollowed };
 }
 
-function StoryAuthor({ blog, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onBusyChange }: {
+function StoryAuthor({ blog, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onBusyChange, onOpenUser }: {
   blog: BlogDetail; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
-  onIdentityRetry: () => void; onLogin: () => void; onBusyChange: (busy: boolean) => void;
+  onIdentityRetry: () => void; onLogin: () => void; onBusyChange: (busy: boolean) => void; onOpenUser: (id: string) => void;
 }) {
   const authorId = positiveUserId(blog.userId);
   const isSelf = Boolean(viewerId && authorId === viewerId);
@@ -594,7 +763,7 @@ function StoryAuthor({ blog, token, viewerId, identityLoading, identityError, on
   }
 
   return <section className="story-author" aria-label="作者信息">
-    <div className="detail-author"><FeedAvatar source={blog.authorIcon} /><span className="detail-author-info"><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span>
+    <div className="detail-author"><button type="button" className="author-profile-link" aria-label={"查看" + (blog.authorName || "作者") + "的主页"} disabled={!authorId || state.phase === 'saving'} onClick={() => authorId && onOpenUser(authorId)}><FeedAvatar source={blog.authorIcon} /><span className="detail-author-info"><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span></button>
       {authorId && !isSelf && <button type="button" className={`author-follow-button${state.data?.followed ? ' is-followed' : ''}`} data-testid="author-follow" aria-label={actionLabel} aria-pressed={token && !needsIdentity ? state.data?.followed : undefined} aria-busy={busy || identityLoading} disabled={busy || Boolean(token && identityLoading)} onClick={act}>{state.data?.followed && <CheckIcon aria-hidden="true" />}<span>{label}</span></button>}
     </div>
     {token && authorId && !isSelf && <div className="author-follow-feedback" aria-live="polite">
@@ -606,28 +775,66 @@ function StoryAuthor({ blog, token, viewerId, identityLoading, identityError, on
   </section>;
 }
 
-function PublishedStory({ blogId, token, viewerId, identityLoading, identityError, onIdentityRetry, onBack, onLogin, onNew }: {
+
+function StoryGalleryImage({source, title, index, onReload}: {source: string; title: string; index: number; onReload: () => void}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [source]);
+  return !failed ? <img src={source} alt={title + '，第 ' + (index + 1) + ' 张图片'} decoding="async" onError={() => setFailed(true)} /> : <div className="live-story-image-error"><CameraIcon /><span>这张图片暂时无法显示。</span><button type="button" className="outline-button" onClick={onReload}>刷新图片</button></div>;
+}
+
+function StoryGallery({imageUrls, coverImage, title, onReload}: {imageUrls?: string[]; coverImage: string; title: string; onReload: () => void}) {
+  const {device} = useMobileDevice();
+  const wrapper = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(0);
+  const candidates = imageUrls === undefined ? coverImage ? [coverImage] : [] : imageUrls;
+  const valid = Array.isArray(candidates) && candidates.every(source => typeof source === 'string' && (/^https?:\/\//i.test(source) || source.startsWith('/assets/')));
+  const sources: string[] = valid ? candidates : [];
+  const identity = sources.join('|');
+  useEffect(() => {
+    const node = wrapper.current?.querySelector<HTMLElement>('.story-image-carousel');
+    if (node) node.scrollLeft = 0;
+    setActive(0);
+  }, [identity, device.geometry.screen.width]);
+  function show(index: number) {
+    const node = wrapper.current?.querySelector<HTMLElement>('.story-image-carousel');
+    if (!node) return;
+    node.scrollTo({left: index * node.clientWidth, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+  }
+  if (!valid || !sources.length) return <div className="live-story-image-error"><CameraIcon /><span>{valid ? '图片暂时无法显示，可以刷新笔记重试。' : '笔记图片返回格式不正确，请刷新重试。'}</span><button type="button" className="outline-button" onClick={onReload}>重新加载</button></div>;
+  return <div className="story-gallery" ref={wrapper} onScrollCapture={event => {
+    const node = event.target;
+    if (node instanceof HTMLElement && node.classList.contains('story-image-carousel')) {
+      setActive(Math.max(0, Math.min(sources.length - 1, Math.round(node.scrollLeft / Math.max(1, node.clientWidth)))));
+    }
+  }}>
+    <Carousel className="story-image-carousel" contentClassName="story-image-track" ariaLabel="笔记图片轮播" draggingEnabled={sources.length > 1}>
+      {sources.map((source, index) => <figure className="story-image-slide" key={index + ':' + source} style={{width: device.geometry.screen.width}} aria-hidden={index !== active} role="group" aria-label={'第 ' + (index + 1) + ' 张图片'}>
+        <StoryGalleryImage source={source} title={title} index={index} onReload={onReload} />
+        {sources.length > 1 && <><figcaption>{index + 1} / {sources.length}</figcaption><button type="button" className="story-gallery-prev" aria-label="上一张图片" tabIndex={index === active ? 0 : -1} disabled={index === 0} onClick={() => show(index - 1)}><ChevronLeftIcon /></button><button type="button" className="story-gallery-next" aria-label="下一张图片" tabIndex={index === active ? 0 : -1} disabled={index === sources.length - 1} onClick={() => show(index + 1)}><ChevronRightIcon /></button></>}
+      </figure>)}
+    </Carousel>
+    {sources.length > 1 && <div className="story-gallery-guide"><span>左右滑动查看图片</span><span role="status" aria-live="polite">{active + 1} / {sources.length}</span></div>}
+  </div>;
+}
+
+function PublishedStory({ blogId, token, viewerId, identityLoading, identityError, onIdentityRetry, onBack, onLogin, onNew, onOpenUser }: {
   blogId: string; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
-  onIdentityRetry: () => void; onBack: () => void; onLogin: () => void; onNew: () => void;
+  onIdentityRetry: () => void; onBack: () => void; onLogin: () => void; onNew: () => void; onOpenUser: (id: string) => void;
 }) {
   const story = useResource<BlogDetail>(`/blog/${encodeURIComponent(blogId)}`, token);
   const likes = useBlogLike(blogId, token);
-  const [imageFailed, setImageFailed] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
-  useEffect(() => { setImageFailed(false); }, [story.data?.coverImage]);
-  const reload = () => { setImageFailed(false); story.reload(); void likes.reload(); };
+  const reload = () => { story.reload(); void likes.reload(); };
   const blog = story.data;
   const mismatched = Boolean(blog && String(blog.id) !== blogId);
-  const cover = blog?.coverImage || '';
-  const readableCover = /^https?:\/\//i.test(cover) || cover.startsWith('/assets/');
 
   return <>
     <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={story.loading || likes.busy || followBusy}>刷新</button></header>
     <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
     {blog && !mismatched && !story.error && <>
-      {readableCover && !imageFailed ? <img className="detail-hero" src={cover} alt={blog.title} onError={() => setImageFailed(true)} /> : <div className="live-story-image-error"><CameraIcon /><span>图片暂时无法显示，可以刷新笔记重试。</span><button className="outline-button" onClick={reload}>重新加载</button></div>}
+      <StoryGallery imageUrls={blog.imageUrls} coverImage={blog.coverImage} title={blog.title} onReload={reload} />
       <div className="detail-body">
-        <StoryAuthor blog={blog} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onBusyChange={setFollowBusy} />
+        <StoryAuthor blog={blog} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onBusyChange={setFollowBusy} onOpenUser={onOpenUser} />
         <h1>{blog.title}</h1>
         <p className="live-story-content">{blog.content}</p>
         {token ? <StoryLikeActions likes={likes} comments={blog.comments ?? 0} /> : <section className="live-like-section" aria-label="笔记互动"><div className="live-story-stats"><button type="button" className="live-like-button" onClick={onLogin}><HeartIcon aria-hidden="true" /><span>登录后点赞</span><small>{blog.liked ?? 0} 次赞</small></button><span><ChatBubbleIcon aria-hidden="true" />{blog.comments ?? 0} 条评论</span></div></section>}
@@ -670,9 +877,9 @@ function validBlogFeedPage(value: unknown, current: number): value is BlogFeedPa
     && new Set(page.records.map(note => note.id)).size === page.records.length;
 }
 
-function BlogFeed({ current, refreshKey, onPageChange, onOpenNote, onNew }: {
+function BlogFeed({ current, refreshKey, onPageChange, onOpenNote, onNew, onOpenUser }: {
   current: number; refreshKey: string; onPageChange: (page: number) => void;
-  onOpenNote: (id: string) => void; onNew: () => void;
+  onOpenNote: (id: string) => void; onNew: () => void; onOpenUser: (id: string) => void;
 }) {
   const result = useResource<BlogFeedPage>(`/blog/feed?current=${current}&size=10`, refreshKey);
   const page = validBlogFeedPage(result.data, current) ? result.data : null;
@@ -688,7 +895,7 @@ function BlogFeed({ current, refreshKey, onPageChange, onOpenNote, onNew }: {
       {page.records.length === 0 ? <div className="empty-state"><CameraIcon /><h2>第一个好地方，等你来记录</h2><p>暂时还没有笔记，分享你最近的一次发现吧。</p><button className="primary-button" onClick={onNew}>写一篇笔记</button></div> : <>
         {page.records.map(note => <article className="story-card live-feed-card" key={note.id} data-testid="feed-note">
           <button className="story-photo-button" onClick={() => onOpenNote(note.id)} aria-label={`查看笔记：${note.title}`}><FeedCover source={note.coverImage} title={note.title} /><span className="photo-counter">读一篇故事 <ChevronRightIcon aria-hidden="true" /></span></button>
-          <div className="author-row"><FeedAvatar source={note.authorIcon} /><div className="author-meta"><strong>{note.authorName || '未知用户'}</strong><span>{note.createTime ? `${timeLabel(note.createTime)} 发布` : '分享身边的好地方'}</span></div></div>
+          <button type="button" className="author-row feed-author-link" aria-label={"查看" + (note.authorName || "作者") + "的主页"} disabled={!note.userId} onClick={() => note.userId && onOpenUser(note.userId)}><FeedAvatar source={note.authorIcon} /><span className="author-meta"><strong>{note.authorName || '未知用户'}</strong><span>{note.createTime ? `${timeLabel(note.createTime)} 发布` : '分享身边的好地方'}</span></span></button>
           <div className="story-content"><button className="story-text-button" onClick={() => onOpenNote(note.id)}><h2>{note.title}</h2></button><div className="feed-card-footer"><div className="feed-card-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></div><button type="button" className="text-button" onClick={() => onOpenNote(note.id)}>阅读全文 <ChevronRightIcon aria-hidden="true" /></button></div></div>
         </article>)}
         <nav className="pagination feed-pagination" aria-label="笔记广场分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
@@ -756,10 +963,10 @@ function validFollowPeoplePage(value: unknown, current: number): value is Follow
     && new Set(page.records.map(person => person.userId)).size === page.records.length;
 }
 
-function FollowPersonRow({ person, mode, token, viewerId, identityLoading, identityError, onIdentityRetry, onConfirmed, onBusyChange }: {
+function FollowPersonRow({ person, mode, token, viewerId, identityLoading, identityError, onIdentityRetry, onConfirmed, onBusyChange, onOpenUser }: {
   person: FollowPerson; mode: FollowListMode; token: string; viewerId: string | null;
   identityLoading: boolean; identityError: string; onIdentityRetry: () => void;
-  onConfirmed: () => void; onBusyChange: (id: string, busy: boolean) => void;
+  onConfirmed: () => void; onBusyChange: (id: string, busy: boolean) => void; onOpenUser: (id: string) => void;
 }) {
   const isSelf = person.userId === viewerId;
   const needsIdentity = !viewerId || identityLoading || Boolean(identityError);
@@ -783,17 +990,17 @@ function FollowPersonRow({ person, mode, token, viewerId, identityLoading, ident
   }
 
   return <article className="follow-person" data-testid="follow-person" data-user-id={person.userId}>
-    <div className="follow-person-main"><FeedAvatar source={person.icon} /><div className="follow-person-info"><strong>{name}</strong><small>{person.followTime ? `${timeLabel(person.followTime)} ${mode === 'followers' ? '关注了你' : '关注'}` : '关注时间待更新'}</small></div>
+    <div className="follow-person-main"><button type="button" className="follow-person-link" aria-label={"查看" + name + "的主页"} disabled={state.phase === 'saving'} onClick={() => onOpenUser(person.userId)}><FeedAvatar source={person.icon} /><span className="follow-person-info"><strong>{name}</strong><small>{person.followTime ? `${timeLabel(person.followTime)} ${mode === 'followers' ? '关注了你' : '关注'}` : '关注时间待更新'}</small></span></button>
       {isSelf ? <span className="follow-person-self">自己</span> : <button type="button" className={`author-follow-button${state.data?.followed ? ' is-followed' : ''}`} data-testid="relation-follow" aria-label={actionLabel} aria-pressed={!needsIdentity ? state.data?.followed : undefined} aria-busy={busy || identityLoading} disabled={busy || identityLoading} onClick={act}>{state.data?.followed && <CheckIcon aria-hidden="true" />}<span>{label}</span></button>}
     </div>
     {!isSelf && <div className="author-follow-feedback" aria-live="polite">{state.message && <p role="status">{state.message}</p>}{state.error && <p className="author-follow-error" role="alert">{state.error}</p>}{!needsIdentity && (state.error || state.uncertainTarget !== null) && <button type="button" className="text-button" disabled={busy} onClick={() => void reload()}>刷新关注状态</button>}</div>}
   </article>;
 }
 
-function FollowPeople({ mode, token, current, viewerId, identityLoading, identityError, onIdentityRetry, onPageChange, onModeChange, onLogin, onDiscover }: {
+function FollowPeople({ mode, token, current, viewerId, identityLoading, identityError, onIdentityRetry, onPageChange, onModeChange, onLogin, onDiscover, onOpenUser }: {
   mode: FollowListMode; token: string; current: number; viewerId: string | null; identityLoading: boolean; identityError: string;
   onIdentityRetry: () => void; onPageChange: (page: number) => void; onModeChange: (mode: FollowListMode) => void;
-  onLogin: () => void; onDiscover: () => void;
+  onLogin: () => void; onDiscover: () => void; onOpenUser: (id: string) => void;
 }) {
   const result = useResource<FollowPeoplePage>(token ? `/user/me/${mode}?current=${current}&size=10` : null, token);
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
@@ -822,13 +1029,127 @@ function FollowPeople({ mode, token, current, viewerId, identityLoading, identit
     {page && !result.loading && !error && !outOfRange && <>
       {page.total === 0 ? <div className="empty-state follow-people-empty"><PersonIcon /><h2>{mode === 'following' ? '从一位喜欢的作者开始' : '下一次相遇，正在路上'}</h2><p>{mode === 'following' ? '读一篇喜欢的笔记，关注分享它的人。' : '继续分享好地方，让更多人认识你。'}</p><button className="primary-button" onClick={onDiscover}>去发现笔记</button></div> : <>
         {page.records.length === 0 && <div className="request-state"><p>本页记录已变化，请刷新列表。</p><button type="button" className="outline-button" onClick={result.reload}>重新加载</button></div>}
-        <div className="follow-people-list">{page.records.map(person => <FollowPersonRow key={person.userId} person={person} mode={mode} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onConfirmed={result.reload} onBusyChange={onBusyChange} />)}</div>
+        <div className="follow-people-list">{page.records.map(person => <FollowPersonRow key={person.userId} person={person} mode={mode} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onConfirmed={result.reload} onBusyChange={onBusyChange} onOpenUser={onOpenUser} />)}</div>
         <nav className="pagination" aria-label="关注与粉丝分页"><button type="button" disabled={busy || current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={busy || current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
       </>}
     </>}
   </section>;
 }
 
+
+
+function validPublicProfile(value: unknown, userId: string): value is PublicUserProfile {
+  if (!value || typeof value !== 'object') return false;
+  const profile = value as Partial<PublicUserProfile>;
+  return profile.userId === userId && typeof profile.nickName === 'string'
+    && (profile.icon === null || typeof profile.icon === 'string')
+    && typeof profile.followingCount === 'number' && Number.isSafeInteger(profile.followingCount) && profile.followingCount >= 0
+    && typeof profile.followersCount === 'number' && Number.isSafeInteger(profile.followersCount) && profile.followersCount >= 0;
+}
+
+function validAuthorNotes(value: unknown, current: number): value is BlogPage {
+  if (!value || typeof value !== 'object') return false;
+  const page = value as Partial<BlogPage>;
+  const count = (n: unknown) => n === null || (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0);
+  return typeof page.total === 'number' && Number.isSafeInteger(page.total) && page.total >= 0
+    && page.current === current && typeof page.size === 'number' && Number.isInteger(page.size) && page.size >= 1 && page.size <= 50
+    && Array.isArray(page.records) && page.records.length <= page.size
+    && page.records.every(note => note && typeof note.id === 'string' && positiveUserId(note.id) !== null
+      && typeof note.title === 'string' && (note.coverImage === null || typeof note.coverImage === 'string')
+      && (note.createTime === null || typeof note.createTime === 'string') && count(note.liked) && count(note.comments))
+    && new Set(page.records.map(note => note.id)).size === page.records.length;
+}
+
+function AuthorNotes({ userId, token, current, refreshKey, isSelf, onPageChange, onOpenNote, onNew }: {
+  userId: string; token: string; current: number; refreshKey: number; isSelf: boolean;
+  onPageChange: (page: number) => void; onOpenNote: (id: string) => void; onNew: () => void;
+}) {
+  const result = useResource<BlogPage>('/blog/of/user/' + userId + '?current=' + current + '&size=10', token + ':' + refreshKey);
+  const page = validAuthorNotes(result.data, current) ? result.data : null;
+  const pages = page ? Math.max(1, Math.ceil(page.total / page.size)) : 1;
+  const outOfRange = Boolean(page && current > pages);
+  useEffect(() => { if (outOfRange) onPageChange(pages); }, [outOfRange, onPageChange, pages]);
+  const error = result.error || (!result.loading && !page ? '笔记列表返回格式不正确，请重新加载' : '');
+  return <section className="user-home-notes" aria-label={isSelf ? '我的公开笔记' : 'TA的笔记'}>
+    <div className="user-home-notes-heading"><h2>{isSelf ? '我的笔记' : 'TA 的笔记'}</h2>{page && <span>{page.total} 篇</span>}</div>
+    <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
+    {page && !result.loading && !error && !outOfRange && <>
+      {page.total === 0 ? <div className="empty-state user-home-empty"><CameraIcon /><h2>{isSelf ? '记录你的第一个好地方' : '还没有公开笔记'}</h2><p>{isSelf ? '把值得分享的发现，留在这里。' : '下次再来，看看新的发现。'}</p>{isSelf && <button type="button" className="primary-button" onClick={onNew}>写一篇笔记</button>}</div> : <>
+        {page.records.length === 0 && <div className="request-state"><p>笔记列表已变化，请刷新后查看。</p><button type="button" className="outline-button" onClick={result.reload}>重新加载</button></div>}
+        <div className="user-home-notes-list">{page.records.map(note => <button type="button" className="my-note-card" data-testid="user-home-note" key={note.id} onClick={() => onOpenNote(note.id)} aria-label={'查看笔记：' + note.title}>
+          <NoteThumbnail source={note.coverImage} /><span className="my-note-copy"><strong>{note.title}</strong><small>{timeLabel(note.createTime)} 发布</small><span className="my-note-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></span></span><ChevronRightIcon className="my-note-arrow" aria-hidden="true" />
+        </button>)}</div>
+        <nav className="pagination" aria-label="用户笔记分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
+      </>}
+    </>}
+  </section>;
+}
+
+function UserHomeIdentity({ profile, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onEdit, onRelations, onConfirmed, onBusyChange }: {
+  profile: PublicUserProfile; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
+  onIdentityRetry: () => void; onLogin: () => void; onEdit: () => void; onRelations: (mode: FollowListMode) => void;
+  onConfirmed: () => void; onBusyChange: (busy: boolean) => void;
+}) {
+  const isSelf = Boolean(token && viewerId === profile.userId);
+  const needsIdentity = Boolean(token && (!viewerId || identityLoading || identityError));
+  const enabled = Boolean(token && viewerId && !isSelf && !needsIdentity);
+  const {state, busy, reload, setFollowed} = useAuthorFollow(profile.userId, token, enabled, undefined, onConfirmed);
+  useEffect(() => { onBusyChange(state.phase === 'saving'); return () => onBusyChange(false); }, [state.phase, onBusyChange]);
+  const label = !token ? '+ 关注' : needsIdentity ? identityLoading ? '确认身份…' : '重试登录状态'
+    : state.phase === 'loading' ? '查询中…' : state.phase === 'saving' ? state.message
+    : state.uncertainTarget !== null ? state.uncertainTarget ? '确认关注' : '确认取消'
+    : state.data ? state.data.followed ? '已关注' : '+ 关注' : '重试查询';
+  const actionLabel = !token ? '登录后关注作者' : needsIdentity ? '重试登录状态' : busy ? label
+    : state.uncertainTarget !== null ? state.uncertainTarget ? '重新确认关注作者' : '重新确认取消关注'
+    : state.data ? state.data.followed ? '取消关注作者' : '关注作者' : '重试查询关注状态';
+  function act() {
+    if (!token) { onLogin(); return; }
+    if (needsIdentity) { onIdentityRetry(); return; }
+    if (state.uncertainTarget !== null) { void setFollowed(state.uncertainTarget); return; }
+    if (!state.data) { void reload(); return; }
+    void setFollowed(!state.data.followed);
+  }
+  return <section className="user-home-summary" aria-label="用户公开资料">
+    <div className="user-home-identity"><ProfileAvatar source={profile.icon} /><h1>{profile.nickName || '未知用户'}</h1>
+      {isSelf ? <button type="button" className="outline-button user-home-edit" onClick={onEdit}>编辑资料</button> : <button type="button" className={'author-follow-button' + (state.data?.followed ? ' is-followed' : '')} data-testid="user-home-follow" aria-label={actionLabel} aria-pressed={!needsIdentity && token ? state.data?.followed : undefined} aria-busy={busy || identityLoading} disabled={busy || Boolean(token && identityLoading)} onClick={act}>{state.data?.followed && <CheckIcon aria-hidden="true" />}{label}</button>}
+    </div>
+    {!isSelf && token && <div className="author-follow-feedback" aria-live="polite">{needsIdentity && !identityLoading && <p className="author-follow-error" role="alert">暂时无法确认当前账号，请重试登录状态。</p>}{state.message && <p role="status">{state.message}</p>}{state.error && <p className="author-follow-error" role="alert">{state.error}</p>}{!needsIdentity && (state.error || state.uncertainTarget !== null) && <button type="button" className="text-button" disabled={busy} onClick={() => void reload()}>刷新关注状态</button>}</div>}
+    <div className="user-home-stats" aria-label="用户统计">
+      {isSelf ? <><button type="button" aria-label={'关注 ' + profile.followingCount + ' 人'} onClick={() => onRelations('following')}><strong data-testid="following-count">{profile.followingCount}</strong><span>关注<ChevronRightIcon aria-hidden="true" /></span></button><button type="button" aria-label={'粉丝 ' + profile.followersCount + ' 人'} onClick={() => onRelations('followers')}><strong data-testid="followers-count">{profile.followersCount}</strong><span>粉丝<ChevronRightIcon aria-hidden="true" /></span></button></> : <><div><strong data-testid="following-count">{profile.followingCount}</strong><span>关注</span></div><div><strong data-testid="followers-count">{profile.followersCount}</strong><span>粉丝</span></div></>}
+    </div>
+  </section>;
+}
+
+function UserHome({ userId, token, viewerId, identityLoading, identityError, current, onPageChange, onIdentityRetry, onBack, onLogin, onEdit, onRelations, onOpenNote, onNew }: {
+  userId: string; token: string; viewerId: string | null; identityLoading: boolean; identityError: string; current: number;
+  onPageChange: (page: number) => void; onIdentityRetry: () => void; onBack: () => void; onLogin: () => void;
+  onEdit: () => void; onRelations: (mode: FollowListMode) => void; onOpenNote: (id: string) => void; onNew: () => void;
+}) {
+  const result = useResource<PublicUserProfile>('/user/public/' + userId, token);
+  const [known, setKnown] = useState<PublicUserProfile | null>(null);
+  const [notesRefresh, setNotesRefresh] = useState(0);
+  const [followRefresh, setFollowRefresh] = useState(0);
+  const [followBusy, setFollowBusy] = useState(false);
+  const valid = validPublicProfile(result.data, userId);
+  useEffect(() => { if (validPublicProfile(result.data, userId)) setKnown(result.data); }, [result.data, userId]);
+  const error = result.error || (!result.loading && !valid ? '用户主页返回格式不正确，请重新加载' : '');
+  const profile = !error ? valid ? result.data : known?.userId === userId ? known : null : null;
+  const isSelf = Boolean(token && viewerId === userId);
+  function refresh() {
+    if (followBusy) return;
+    result.reload();
+    setNotesRefresh(v => v + 1);
+    setFollowRefresh(v => v + 1);
+  }
+  return <>
+    <header className="page-header user-home-header"><button type="button" aria-label="返回上一页" onClick={onBack} disabled={followBusy}><ArrowLeftIcon /></button><span>用户主页</span><button type="button" className="text-button" onClick={refresh} disabled={result.loading || followBusy}>刷新</button></header>
+    <MobileScroll className="m1-scroll full-page user-home-scroll" key={userId + ':' + current}>
+      <div className="user-home-body"><RequestState loading={result.loading && !profile} error={error} onRetry={result.reload} />
+        {profile && <><UserHomeIdentity key={userId + ':' + token + ':' + followRefresh} profile={profile} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onEdit={onEdit} onRelations={onRelations} onConfirmed={result.reload} onBusyChange={setFollowBusy} /><AuthorNotes userId={userId} token={token} current={current} refreshKey={notesRefresh} isSelf={isSelf} onPageChange={onPageChange} onOpenNote={onOpenNote} onNew={onNew} /></>}
+      </div>
+    </MobileScroll>
+  </>;
+}
 
 function ProfileAvatar({ source, large = false, onError }: { source: string | null; large?: boolean; onError?: () => void }) {
   const [failed, setFailed] = useState(false);
@@ -994,7 +1315,6 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
             <span className="profile-camera-badge"><CameraIcon aria-hidden="true" /></span>
           </button>
           <button type="button" className="text-button profile-avatar-change" onClick={chooseAvatar} disabled={locked || uploading}>{uploading ? '头像上传中…' : '更换头像'}</button>
-          <small>JPEG、PNG · 最大 5MB</small>
           <div id="avatar-upload-feedback" className={'photo-upload-feedback ' + upload.photo.phase} aria-live="polite">
             {avatarMode === 'replace' && uploading && <span role="status">正在上传头像…</span>}
             {avatarMode === 'replace' && upload.photo.phase === 'success' && <><span className="photo-upload-success"><CheckIcon />新头像已上传，保存后生效</span>{upload.photo.previewUnavailable && <span>在线预览暂时无法加载，当前显示本地照片。</span>}</>}
@@ -1009,8 +1329,7 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
         <section className="profile-fields" aria-label="个人资料">
           <label htmlFor="profile-nickname">昵称</label>
           <KeyboardInput id="profile-nickname" autoComplete="nickname" value={nickName} maxLength={80} disabled={locked} aria-invalid={Boolean(nameError)} aria-describedby="profile-nickname-hint" placeholder="给自己起个昵称" onChange={event => { setNickName(event.target.value); setError(''); }} />
-          <div className="profile-field-hint" id="profile-nickname-hint"><span className={nameError ? 'profile-field-invalid' : ''}>{nameError || '1～20 个字符'}</span><span>{nameLength} / 20</span></div>
-          <dl className="profile-readonly"><div><dt>账号 ID</dt><dd>{userId}<small>不可修改</small></dd></div></dl>
+          <div className="profile-field-hint" id="profile-nickname-hint"><span className={nameError ? 'profile-field-invalid' : ''}>{nameError}</span><span>{nameLength} / 20</span></div>
         </section>
         {error && <p className="profile-form-error" role="alert">{error}</p>}
         {(phase === 'uncertain' || phase === 'checking') && <section className="profile-save-check" aria-label="确认资料保存结果"><strong>先确认这次保存结果</strong><p>修改可能已经生效，刷新后会核对当前资料。</p><button type="button" className="outline-button" disabled={busy} onClick={() => void checkSaved()}>{phase === 'checking' ? '正在确认…' : '刷新当前资料'}</button><button type="button" className="text-button" disabled={busy} onClick={() => void save(true)}>重新保存这份资料</button></section>}
@@ -1037,7 +1356,12 @@ export default function Prototype() {
   const [toast, setToast] = useState('');
   const toastTimer = useRef<number | undefined>(undefined);
   const [selectedBlogId, setSelectedBlogId] = useState<string | null>(null);
-  const [storyReturn, setStoryReturn] = useState<'home' | 'myNotes'>('home');
+  const [storyReturn, setStoryReturn] = useState<StoryReturn>('home');
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [userNotesPage, setUserNotesPage] = useState(1);
+  const [relationsReturn, setRelationsReturn] = useState<'profile' | 'userHome'>('profile');
+  const [editReturn, setEditReturn] = useState<'profile' | 'userHome'>('profile');
+  const journey = useRef<JourneySnapshot[]>([]);
   const [myNotesPage, setMyNotesPage] = useState(1);
   const [followingPage, setFollowingPage] = useState(1);
   const [followersPage, setFollowersPage] = useState(1);
@@ -1054,7 +1378,6 @@ export default function Prototype() {
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
-  const photoUpload = usePhotoUpload(token);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [codeUntil, setCodeUntil] = useState(0);
@@ -1071,6 +1394,7 @@ export default function Prototype() {
   const vouchers = useResource<Voucher[]>(selectedShopId === null ? null : `/voucher/list/${selectedShopId}`);
   const search = useResource<Shop[]>(page === 'search' ? `/shop/of/name?name=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}` : null);
   const me = useResource<User>(token ? '/user/me' : null, token);
+  const notePhotos = useNotePhotos(token, positiveUserId(me.data?.id));
   const showNav = ['home', 'nearby', 'publish', 'messages', 'profile'].includes(page);
   const relationMode: FollowListMode | null = page === 'following' || page === 'followers' ? page : null;
   const secondsLeft = Math.max(0, Math.ceil((codeUntil - now) / 1000));
@@ -1080,18 +1404,63 @@ export default function Prototype() {
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(''), 3200);
   }, []);
-  function navigate(destination: Page) { keyboard.hide(); currentPage.current = destination; setPage(destination); }
+  function navigate(destination: Page) {
+    keyboard.hide();
+    if (['home', 'nearby', 'profile', 'publish', 'messages', 'search', 'shop', 'checkout'].includes(destination)) journey.current = [];
+    currentPage.current = destination; setPage(destination);
+  }
   function openShop(id: number) { setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
-  function openEditProfile() { if (!token) { openLogin('editProfile'); return; } navigate('editProfile'); }
+  function openEditProfile() { setEditReturn('profile'); if (!token) { openLogin('editProfile'); return; } navigate('editProfile'); }
+  function editOwnHome() { setEditReturn('userHome'); if (!token) { openLogin('userHome'); return; } navigate('editProfile'); }
+  function finishEditing(saved: boolean) { me.reload(); navigate(editReturn); if (saved) flash('个人资料已保存'); }
+  function captureJourney(): JourneySnapshot {
+    return { page: currentPage.current, blogId: selectedBlogId, storyReturn, userId: selectedUserId, notesPage: userNotesPage, relationsReturn };
+  }
+  function restoreJourney() {
+    const previous = journey.current.pop();
+    if (!previous) { navigate('home'); return; }
+    setSelectedBlogId(previous.blogId);
+    setStoryReturn(previous.storyReturn);
+    setSelectedUserId(previous.userId);
+    setUserNotesPage(previous.notesPage);
+    setRelationsReturn(previous.relationsReturn);
+    navigate(previous.page);
+  }
+  function openUserHome(id: string) {
+    const target = positiveUserId(id);
+    if (!target || currentPage.current === 'userHome') return;
+    journey.current.push(captureJourney());
+    setSelectedUserId(target);
+    setUserNotesPage(1);
+    navigate('userHome');
+  }
+  function openMyHome() {
+    if (!token) { openLogin('profile'); return; }
+    const id = positiveUserId(me.data?.id);
+    if (!id) { me.reload(); flash('正在获取个人资料，请稍后再试'); return; }
+    openUserHome(id);
+  }
+  function backFromUserHome() { if (currentPage.current === 'userHome') restoreJourney(); }
+  function backFromStory() {
+    if (currentPage.current !== 'story') return;
+    if (storyReturn === 'userHome') restoreJourney();
+    else navigate(storyReturn);
+  }
   function startNewNote() { if (!token) { openLogin('publish'); return; } navigate('publish'); }
-  function openPublishedStory(id: string, returnTo: 'home' | 'myNotes' = 'home') { setSelectedBlogId(id); setStoryReturn(returnTo); navigate('story'); }
+  function openPublishedStory(id: string, returnTo: StoryReturn = 'home') {
+    if (currentPage.current === 'story') return;
+    if (returnTo === 'userHome') journey.current.push(captureJourney());
+    setSelectedBlogId(id); setStoryReturn(returnTo); navigate('story');
+  }
   function openMyNotes() {
     setMyNotesPage(1);
     if (!token) { openLogin('myNotes'); return; }
     navigate('myNotes');
   }
-  function openFollowPeople(mode: FollowListMode) {
+  function openFollowPeople(mode: FollowListMode, returnTo?: 'profile' | 'userHome') {
+    if (returnTo) setRelationsReturn(returnTo);
+    else if (!relationMode) setRelationsReturn('profile');
     if (mode === 'following') setFollowingPage(1); else setFollowersPage(1);
     if (!token) { openLogin(mode); return; }
     navigate(mode);
@@ -1100,7 +1469,8 @@ export default function Prototype() {
     if (publishRequest.current) return;
     keyboard.hide();
     if (!token) { openLogin('publish'); return; }
-    if (photoUpload.photo.phase !== 'uploading') photoInput.current?.click();
+    if (!positiveUserId(me.data?.id) || me.loading || me.error) { me.reload(); flash('请先确认登录状态后添加图片'); return; }
+    if (notePhotos.photos.length < MAX_NOTE_PHOTOS) photoInput.current?.click();
   }
 
   useEffect(() => {
@@ -1141,10 +1511,11 @@ export default function Prototype() {
     if (localStorage.getItem(TOKEN_KEY) !== token) return;
     const title = draft.title.trim();
     const content = draft.body.trim();
-    const image = photoUpload.photo.uploaded;
+    const imageKeys = notePhotos.photos.map(photo => photo.uploaded?.objectKey);
     if (!title || title.length > 60) { setPublishError('请输入不超过 60 个字符的标题'); return; }
     if (!content || content.length > 10000) { setPublishError('请输入正文，最多 10000 个字符'); return; }
-    if (photoUpload.photo.phase !== 'success' || !image) { setPublishError('请先成功上传一张照片'); return; }
+    if (!notePhotos.photos.length || notePhotos.photos.length > MAX_NOTE_PHOTOS || !notePhotos.ready) { setPublishError('请先成功上传 1～9 张图片'); return; }
+    if (new Set(imageKeys).size !== imageKeys.length) { setPublishError('上传结果中有重复图片，请删除重复项后重新上传'); return; }
     keyboard.hide();
     const controller = new AbortController();
     publishRequest.current = controller;
@@ -1154,7 +1525,7 @@ export default function Prototype() {
     try {
       const result = await api<string | number>('/blog', {
         method: 'POST',
-        body: JSON.stringify({ title, coverImage: image.objectKey, content }),
+        body: JSON.stringify({ title, imageObjectKeys: imageKeys, content }),
         signal: controller.signal,
       });
       if (!active()) return;
@@ -1165,7 +1536,7 @@ export default function Prototype() {
       setMyNotesPage(1);
       setPublishPhase('idle');
       setDraft({ title: '', body: '' });
-      photoUpload.clear();
+      notePhotos.clear();
       flash('故事发布成功');
       if (currentPage.current === 'publish') openPublishedStory(id, 'myNotes');
     } catch (error) {
@@ -1240,14 +1611,14 @@ export default function Prototype() {
 
   return <div className="m1-app">
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
-    {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => { me.reload(); navigate('profile'); }} onLogin={() => openLogin('editProfile')} onSaved={() => { me.reload(); navigate('profile'); flash('个人资料已保存'); }} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
         <button className="live-entry" onClick={() => navigate('nearby')}><MapPinIcon /><span><strong>去逛逛附近的小店</strong><small>发现附近小店和优惠券</small></span><ChevronRightIcon /></button>
         {lastPublished && lastPublished.token === token && <button className="live-entry recent-story-entry" onClick={() => openPublishedStory(lastPublished.id)}><CheckIcon /><span><strong>{lastPublished.title}</strong><small>刚刚发布 · 查看你的故事</small></span><ChevronRightIcon /></button>}
-        {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注功能正在准备中，先看看大家的最新笔记。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <BlogFeed current={feedPage} refreshKey={lastPublished?.id || ''} onPageChange={setFeedPage} onOpenNote={id => openPublishedStory(id)} onNew={startNewNote} />}
+        {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注功能正在准备中，先看看大家的最新笔记。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <BlogFeed current={feedPage} refreshKey={lastPublished?.id || ''} onPageChange={setFeedPage} onOpenNote={id => openPublishedStory(id)} onNew={startNewNote} onOpenUser={openUserHome} />}
       </>}
 
       {page === 'nearby' && <>
@@ -1282,48 +1653,39 @@ export default function Prototype() {
       {page === 'profile' && <>
         <header className="profile-header"><span className="eyebrow">YOUR LITTLE CORNER</span><h1>我的巷里<span className="accent-dot">.</span></h1><button type="button" className="profile-identity profile-identity-button" onClick={openEditProfile} aria-label={token ? '编辑个人资料' : '登录后编辑个人资料'}><ProfileAvatar source={me.data?.icon || null} /><span className="profile-identity-copy"><strong>{me.data?.nickName || (token ? me.error ? '暂时无法加载个人信息' : '正在确认登录状态' : '欢迎来巷里走走')}</strong><small>{me.data ? '账号 ID：' + me.data.id : token ? me.error ? '请重试下方请求' : '连接你的巷里账号' : '登录后，开启你的巷里生活'}</small></span><span className="profile-edit-link">{token ? <><Pencil1Icon aria-hidden="true" />编辑资料</> : '登录'}<ChevronRightIcon aria-hidden="true" /></span></button></header>
         {token && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
-        <div className="profile-menu"><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('following')}><PersonIcon /> 我的关注 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('followers')}><HeartIcon /> 我的粉丝 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
+        <div className="profile-menu"><button onClick={openMyHome} disabled={Boolean(token && me.loading)}><HomeIcon /> 我的主页 <ChevronRightIcon /></button><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('following')}><PersonIcon /> 我的关注 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('followers')}><HeartIcon /> 我的粉丝 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
       </>}
 
       {page === 'myNotes' && <MyNotes token={token} current={myNotesPage} refreshKey={lastPublished?.id || ''} onPageChange={setMyNotesPage} onLogin={() => openLogin('myNotes')} onNew={() => navigate('publish')} onOpenNote={id => openPublishedStory(id, 'myNotes')} />}
 
-      {relationMode && <FollowPeople mode={relationMode} token={token} current={relationMode === 'following' ? followingPage : followersPage} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onPageChange={relationMode === 'following' ? setFollowingPage : setFollowersPage} onModeChange={openFollowPeople} onLogin={() => openLogin(relationMode)} onDiscover={() => { setTab('推荐'); navigate('home'); }} />}
+      {relationMode && <FollowPeople mode={relationMode} token={token} current={relationMode === 'following' ? followingPage : followersPage} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onPageChange={relationMode === 'following' ? setFollowingPage : setFollowersPage} onModeChange={openFollowPeople} onOpenUser={openUserHome} onLogin={() => openLogin(relationMode)} onDiscover={() => { setTab('推荐'); navigate('home'); }} />}
 
       {page === 'login' && <>
         <header className="page-header"><button aria-label="返回" onClick={() => { loginAttempt.current += 1; setLoggingIn(false); navigate(loginReturn); }}><ArrowLeftIcon /></button><span>登录巷里</span><span /></header>
         <div className="login-body"><span className="eyebrow">GOOD TO SEE YOU</span><h1>好久不见<span className="accent-dot">.</span></h1><p>用手机号，找回你的巷里生活。</p><form onSubmit={event => { event.preventDefault(); void login(); }}><label htmlFor="login-phone">手机号</label><KeyboardInput id="login-phone" type="tel" inputMode="numeric" autoComplete="tel" value={phone} maxLength={11} disabled={loggingIn || sendingCode} onChange={event => setPhone(event.target.value.replace(/\D/g, ''))} placeholder="请输入 11 位手机号" /><label htmlFor="login-code">验证码</label><div className="verification-row"><KeyboardInput id="login-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} disabled={loggingIn} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="六位验证码" /><button type="button" onClick={() => void sendCode()} disabled={sendingCode || secondsLeft > 0 || loggingIn}>{sendingCode ? '请求中…' : secondsLeft > 0 ? `${secondsLeft}s 后重试` : '获取验证码'}</button></div>{loginError && <p className="form-error" role="alert">{loginError}</p>}<button className="coral-button" type="submit" disabled={loggingIn}>{loggingIn ? '正在登录…' : '登录 / 注册'}</button></form><p className="login-note">首次登录将自动创建账号。本地调试的验证码请查看用户服务控制台，当前未接入真实短信。</p></div>
       </>}
 
-      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={() => navigate(storyReturn)} onLogin={() => openLogin('story')} onNew={startNewNote} />}
+      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} />}
 
       {page === 'publish' && <>
         <header className="sub-header"><div><span className="eyebrow">SHARE YOUR MOMENT</span><h1>记下一个好地方<span className="accent-dot">.</span></h1></div></header>
         <div className="publish-body">
-          <p className="preview-caption">先选一张照片，再慢慢写下你的发现。</p>
-          <input ref={photoInput} className="visually-hidden" type="file" accept="image/jpeg,image/png" aria-label="选择故事照片" disabled={photoUpload.photo.phase === 'uploading' || publishPhase === 'submitting'} onChange={event => {
-            const file = event.currentTarget.files?.[0];
+          <p className="preview-caption">选几张照片，慢慢写下你的发现。</p>
+          <input ref={photoInput} className="visually-hidden" type="file" accept="image/jpeg,image/png" multiple aria-label="选择故事照片" disabled={publishPhase === 'submitting'} onChange={event => {
+            const files = Array.from(event.currentTarget.files || []);
             event.currentTarget.value = '';
-            if (!file || publishRequest.current) return;
+            if (!files.length || publishRequest.current) return;
             if (!token) { openLogin('publish'); return; }
-            photoUpload.select(file);
+            notePhotos.add(files);
           }} />
-          <button className="upload-box" type="button" onClick={choosePhoto} disabled={photoUpload.photo.phase === 'uploading' || publishPhase === 'submitting'} aria-label={photoUpload.photo.preview ? '更换故事照片' : token ? '添加故事照片' : '登录后添加故事照片'} aria-busy={photoUpload.photo.phase === 'uploading'} aria-describedby="photo-upload-feedback">
-            {photoUpload.photo.preview ? <img className="draft-preview" src={photoUpload.photo.preview} alt="故事照片预览" onError={photoUpload.previewFailed} /> : <><CameraIcon /><strong>{token ? '添加照片' : '登录后添加照片'}</strong><span>JPEG、PNG · 单张不超过 5MB</span></>}
-            {photoUpload.photo.phase === 'uploading' && <span className="photo-upload-overlay"><i className="photo-upload-spinner" aria-hidden="true" />正在上传照片…</span>}
-          </button>
-          <div id="photo-upload-feedback" className={`photo-upload-feedback ${photoUpload.photo.phase}`} role={photoUpload.photo.phase === 'error' ? 'alert' : 'status'} aria-live="polite">
-            {photoUpload.photo.phase === 'idle' && <span>{token ? '照片上传后可预览，支持不超过 2000 万像素的图片。' : '登录后即可上传照片，文字可以先在这里记下。'}</span>}
-            {photoUpload.photo.phase === 'uploading' && <span>正在上传，请稍候。你可以继续填写标题与正文。</span>}
-            {photoUpload.photo.phase === 'success' && <><span className="photo-upload-success"><CheckIcon />照片已上传，故事尚未发布</span>{photoUpload.photo.previewUnavailable && <span>在线预览暂时无法加载，当前显示本地照片。</span>}</>}
-            {photoUpload.photo.phase === 'error' && <><span>{photoUpload.photo.error}</span>{photoUpload.photo.retryable && token && <button type="button" className="outline-button" onClick={photoUpload.retry}>重试上传</button>}</>}
-          </div>
-          {photoUpload.photo.preview && photoUpload.photo.phase !== 'uploading' && <button type="button" className="text-button change-photo" onClick={choosePhoto} disabled={publishPhase === 'submitting'}>更换照片</button>}
+          {token && (me.loading || me.error) && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
+          <NotePhotoGrid upload={notePhotos} token={token} disabled={publishPhase === 'submitting'} onChoose={choosePhoto} />
           <label>一句话标题<KeyboardInput value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" /></label>
           <label>说说你的故事<KeyboardTextarea value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} /></label>
           <small className="draft-counter">{draft.body.length} / 10000</small>
           <p className="checkout-note">发布后可以查看完整故事。发布前，草稿仅在当前页面暂存，刷新后不会保留。</p>
           {publishError && <p className="form-error publish-error" role="alert">{publishError}</p>}
-          <button className="coral-button" type="button" disabled={publishPhase === 'submitting' || photoUpload.photo.phase === 'uploading'} onClick={() => void publishStory(publishPhase === 'uncertain')}>{publishPhase === 'submitting' ? '正在发布…' : photoUpload.photo.phase === 'uploading' ? '照片上传中…' : !token ? '登录并发布' : publishPhase === 'uncertain' ? '仍要再次发布' : '发布故事'}</button>
+          <button className="coral-button" type="button" disabled={publishPhase === 'submitting' || notePhotos.busy || Boolean(token && notePhotos.photos.length && !notePhotos.ready)} onClick={() => void publishStory(publishPhase === 'uncertain')}>{publishPhase === 'submitting' ? '正在发布…' : notePhotos.busy ? '图片上传中…' : !token ? '登录并发布' : publishPhase === 'uncertain' ? '仍要再次发布' : '发布故事'}</button>
         </div>
       </>}
 
