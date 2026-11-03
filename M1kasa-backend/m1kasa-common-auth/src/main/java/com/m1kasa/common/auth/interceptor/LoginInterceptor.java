@@ -1,5 +1,6 @@
 package com.m1kasa.common.auth.interceptor;
 
+import com.m1kasa.common.auth.annotation.AllowAnonymous;
 import com.m1kasa.common.base.context.UserContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -37,7 +38,7 @@ public class LoginInterceptor implements HandlerInterceptor {
         UserContext.clear();
         //当前controller方法运行匿名访问，直接放行
         if (handler instanceof HandlerMethod handlerMethod
-                &&handlerMethod.hasMethodAnnotation(Annotation.class)){
+                &&handlerMethod.hasMethodAnnotation(AllowAnonymous.class)){
             return true;
         }
         // 1. 获取请求头

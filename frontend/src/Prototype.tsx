@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeftIcon, BookmarkIcon, CameraIcon, CheckIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
+import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
 import { Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers';
 type FeedTab = '推荐' | '附近' | '关注';
+type FollowListMode = 'following' | 'followers';
+type FollowPerson = { userId: string; nickName: string; icon: string | null; followTime: string | null; followed: boolean };
+type FollowPeoplePage = { records: FollowPerson[]; total: number; current: number; size: number };
 type Result<T> = { success: boolean; errorMsg: string | null; data: T; total: number | null };
 type User = { id: number; nickName: string; icon: string | null };
 type ShopType = { id: number; name: string; icon: string | null };
@@ -13,10 +16,14 @@ type Voucher = { id: number; shopId: number; title: string; subTitle: string | n
 type VoucherOrder = { id: string; voucherId: string; status: number; createTime: string };
 type UploadedImage = { objectKey: string; url: string };
 type BlogLike = { likedByMe: boolean; liked: number };
+type AuthorFollow = { targetUserId: string; followed: boolean };
+type AuthorFollowRequestState = { identity: string; data: AuthorFollow | null; phase: 'idle' | 'loading' | 'saving'; error: string; message: string; uncertainTarget: boolean | null };
 type BlogLikeState = { identity: string; data: BlogLike | null; phase: 'idle' | 'loading' | 'saving'; message: string; error: string; uncertainTarget: boolean | null };
 type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; content: string; liked: number; comments: number; createTime: string | null };
 type BlogSummary = { id: string; title: string; coverImage: string | null; liked: number | null; comments: number | null; createTime: string | null };
 type BlogPage = { records: BlogSummary[]; total: number; current: number; size: number };
+type BlogFeedItem = BlogSummary & { userId: string | null; authorName: string; authorIcon: string | null };
+type BlogFeedPage = { records: BlogFeedItem[]; total: number; current: number; size: number };
 type PublishPhase = 'idle' | 'submitting' | 'uncertain';
 type PhotoUploadState = { preview: string; uploaded: UploadedImage | null; phase: 'idle' | 'uploading' | 'success' | 'error'; error: string; retryable: boolean; previewUnavailable: boolean };
 type ReservationPhase = 'ready' | 'submitting' | 'accepted' | 'uncertain' | 'ordered';
@@ -25,11 +32,6 @@ type ReservationMarker = { phase: 'accepted' | 'uncertain'; attemptId: string };
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 const TOKEN_KEY = 'm1kasa.token';
 const AUTH_EVENT = 'm1kasa:unauthorized';
-const asset = '/assets/stories/';
-const posts = [
-  { id: 1, photo: 'pasta-hero.png', author: '一颗栗子', time: '10月20日', location: '上海', title: '藏在老洋房里的意式小馆，晚餐时的氛围太加分了', excerpt: '和朋友临时起意来这家店，没想到出乎意料地好吃。手工意面酱汁浓郁但不腻，虎虾很新鲜，配一杯白葡萄酒，在老洋房的庭院里聊天，整个人都放松下来了。', shop: 'La Piccola 小房子意大利餐厅', likes: 326 },
-  { id: 2, photo: 'cafe-interior.png', author: '阿栗散步中', time: '昨天', location: '上海 · 静安', title: '午后的老洋房，也值得来坐一坐。', excerpt: '不是赶路的日子，就在窗边喝杯咖啡，坐久一点。', shop: 'La Piccola 小房子意大利餐厅', likes: 86 },
-];
 
 class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
@@ -467,15 +469,147 @@ function StoryLikeActions({ likes, comments }: { likes: ReturnType<typeof useBlo
   </section>;
 }
 
-function PublishedStory({ blogId, token, onBack, onLogin, onNew }: {
-  blogId: string; token: string; onBack: () => void; onLogin: () => void; onNew: () => void;
+function positiveUserId(value: unknown): string | null {
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) return value;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : null;
+}
+
+const emptyAuthorFollow = (identity: string, loading = false): AuthorFollowRequestState => ({ identity, data: null, phase: loading ? 'loading' : 'idle', error: '', message: '', uncertainTarget: null });
+
+function validAuthorFollow(value: unknown, targetUserId: string): value is AuthorFollow {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<AuthorFollow>;
+  return result.targetUserId === targetUserId && typeof result.followed === 'boolean';
+}
+
+function seedAuthorFollow(identity: string, enabled: boolean, targetUserId: string | null, followed?: boolean): AuthorFollowRequestState {
+  return { ...emptyAuthorFollow(identity, enabled && followed === undefined),
+    data: enabled && targetUserId && typeof followed === 'boolean' ? { targetUserId, followed } : null };
+}
+
+function useAuthorFollow(targetUserId: string | null, token: string, enabled: boolean, initialFollowed?: boolean, onConfirmed?: (state: AuthorFollow) => void) {
+  const identity = `${targetUserId || ''}:${token}:${enabled}`;
+  const [saved, setSaved] = useState<AuthorFollowRequestState>(() => seedAuthorFollow(identity, enabled, targetUserId, initialFollowed));
+  const current = useRef(identity);
+  current.current = identity;
+  const request = useRef<AbortController | null>(null);
+  const confirmedCallback = useRef(onConfirmed);
+  confirmedCallback.current = onConfirmed;
+  const hasUnconfirmedWrite = useRef(false);
+  const path = targetUserId ? `/user/${encodeURIComponent(targetUserId)}/follow` : null;
+
+  const reload = useCallback(async () => {
+    if (!enabled || !path || !targetUserId || !token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyAuthorFollow(identity)), phase: 'loading', error: '', message: '' }));
+    try {
+      const result = await api<AuthorFollow>(path, { signal: controller.signal });
+      if (!active()) return;
+      if (!validAuthorFollow(result, targetUserId)) throw new ApiError('关注状态返回格式不正确，请重试', 200);
+      const resolvedWrite = hasUnconfirmedWrite.current;
+      hasUnconfirmedWrite.current = false;
+      setSaved({ identity, data: result, phase: 'idle', error: '', message: '', uncertainTarget: null });
+      if (resolvedWrite) confirmedCallback.current?.(result);
+    } catch (error) {
+      if (!active()) return;
+      setSaved(previous => ({ ...previous, phase: 'idle', error: (error as Error).message,
+        message: previous.uncertainTarget !== null ? '上次操作结果仍待确认。' : '' }));
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }, [enabled, identity, path, targetUserId, token]);
+
+  useEffect(() => {
+    request.current?.abort();
+    request.current = null;
+    hasUnconfirmedWrite.current = false;
+    setSaved(seedAuthorFollow(identity, enabled, targetUserId, initialFollowed));
+    // Lists already include the confirmed state; avoid one GET per row.
+    if (initialFollowed === undefined) void reload();
+    return () => { request.current?.abort(); request.current = null; };
+  }, [enabled, identity, initialFollowed, reload, targetUserId]);
+
+  async function setFollowed(followed: boolean) {
+    if (!enabled || !path || !targetUserId || !token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyAuthorFollow(identity)), phase: 'saving', error: '', message: followed ? '正在关注…' : '正在取消关注…' }));
+    try {
+      const result = await api<AuthorFollow>(path, { method: 'PUT', body: JSON.stringify({ followed }), signal: controller.signal });
+      if (!active()) return;
+      if (!validAuthorFollow(result, targetUserId) || result.followed !== followed) throw new ApiError('关注响应与提交状态不一致', 200);
+      hasUnconfirmedWrite.current = false;
+      setSaved({ identity, data: result, phase: 'idle', error: '', message: followed ? '已关注这位作者' : '已取消关注', uncertainTarget: null });
+      confirmedCallback.current?.(result);
+    } catch (error) {
+      if (!active()) return;
+      const uncertain = !(error instanceof ApiError) || error.status === 0 || error.status >= 500 || (error.status >= 200 && error.status < 300);
+      hasUnconfirmedWrite.current = uncertain;
+      setSaved(previous => ({ ...previous, phase: 'idle', data: uncertain ? null : previous.data,
+        uncertainTarget: uncertain ? followed : null, message: '',
+        error: uncertain ? '这次操作结果暂未确认，可以刷新状态，或重新提交相同选择。' : (error as Error).message }));
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  const state = saved.identity === identity ? saved : seedAuthorFollow(identity, enabled, targetUserId, initialFollowed);
+  return { state, busy: state.phase !== 'idle', reload, setFollowed };
+}
+
+function StoryAuthor({ blog, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onBusyChange }: {
+  blog: BlogDetail; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
+  onIdentityRetry: () => void; onLogin: () => void; onBusyChange: (busy: boolean) => void;
 }) {
-  const story = useResource<BlogDetail>(token ? `/blog/${encodeURIComponent(blogId)}` : null, token);
+  const authorId = positiveUserId(blog.userId);
+  const isSelf = Boolean(viewerId && authorId === viewerId);
+  const enabled = Boolean(token && viewerId && authorId && !isSelf && !identityLoading && !identityError);
+  const follow = useAuthorFollow(authorId, token, enabled);
+  const { state, busy, reload, setFollowed } = follow;
+  const needsIdentity = Boolean(token && (!viewerId || identityLoading || identityError));
+  useEffect(() => { onBusyChange(busy); return () => onBusyChange(false); }, [busy, onBusyChange]);
+
+  const label = !token ? '+ 关注' : needsIdentity ? identityLoading ? '确认身份…' : '重试登录状态'
+    : state.phase === 'loading' ? '查询中…' : state.phase === 'saving' ? state.message
+    : state.uncertainTarget !== null ? state.uncertainTarget ? '确认关注' : '确认取消'
+    : state.data ? state.data.followed ? '已关注' : '+ 关注' : '重试查询';
+  const actionLabel = !token ? '登录后关注作者' : needsIdentity ? '重试登录状态'
+    : busy ? label : state.uncertainTarget !== null ? state.uncertainTarget ? '重新确认关注作者' : '重新确认取消关注'
+    : state.data ? state.data.followed ? '取消关注作者' : '关注作者' : '重试查询关注状态';
+
+  function act() {
+    if (!token) { onLogin(); return; }
+    if (needsIdentity) { onIdentityRetry(); return; }
+    if (state.uncertainTarget !== null) { void setFollowed(state.uncertainTarget); return; }
+    if (!state.data) { void reload(); return; }
+    void setFollowed(!state.data.followed);
+  }
+
+  return <section className="story-author" aria-label="作者信息">
+    <div className="detail-author"><FeedAvatar source={blog.authorIcon} /><span className="detail-author-info"><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span>
+      {authorId && !isSelf && <button type="button" className={`author-follow-button${state.data?.followed ? ' is-followed' : ''}`} data-testid="author-follow" aria-label={actionLabel} aria-pressed={token && !needsIdentity ? state.data?.followed : undefined} aria-busy={busy || identityLoading} disabled={busy || Boolean(token && identityLoading)} onClick={act}>{state.data?.followed && <CheckIcon aria-hidden="true" />}<span>{label}</span></button>}
+    </div>
+    {token && authorId && !isSelf && <div className="author-follow-feedback" aria-live="polite">
+      {needsIdentity && !identityLoading && <p className="author-follow-error" role="alert">暂时无法确认当前账号，请重试登录状态。</p>}
+      {state.message && <p role="status">{state.message}</p>}
+      {state.error && <p className="author-follow-error" role="alert">{state.error}</p>}
+      {!needsIdentity && (state.error || state.uncertainTarget !== null) && <button type="button" className="text-button" disabled={busy} onClick={() => void reload()}>刷新关注状态</button>}
+    </div>}
+  </section>;
+}
+
+function PublishedStory({ blogId, token, viewerId, identityLoading, identityError, onIdentityRetry, onBack, onLogin, onNew }: {
+  blogId: string; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
+  onIdentityRetry: () => void; onBack: () => void; onLogin: () => void; onNew: () => void;
+}) {
+  const story = useResource<BlogDetail>(`/blog/${encodeURIComponent(blogId)}`, token);
   const likes = useBlogLike(blogId, token);
   const [imageFailed, setImageFailed] = useState(false);
-  const [avatarFailed, setAvatarFailed] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
   useEffect(() => { setImageFailed(false); }, [story.data?.coverImage]);
-  useEffect(() => { setAvatarFailed(false); }, [story.data?.authorIcon]);
   const reload = () => { setImageFailed(false); story.reload(); void likes.reload(); };
   const blog = story.data;
   const mismatched = Boolean(blog && String(blog.id) !== blogId);
@@ -483,22 +617,79 @@ function PublishedStory({ blogId, token, onBack, onLogin, onNew }: {
   const readableCover = /^https?:\/\//i.test(cover) || cover.startsWith('/assets/');
 
   return <>
-    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={!token || story.loading || likes.busy}>刷新</button></header>
-    {!token ? <div className="empty-state"><PersonIcon /><h2>登录后，继续读故事</h2><p>这篇笔记已经保存，登录后可以重新查看。</p><button className="primary-button" onClick={onLogin}>登录后查看</button></div> : <>
-      <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
-      {blog && !mismatched && !story.error && <>
-        {readableCover && !imageFailed ? <img className="detail-hero" src={cover} alt={blog.title} onError={() => setImageFailed(true)} /> : <div className="live-story-image-error"><CameraIcon /><span>图片暂时无法显示，可以刷新笔记重试。</span><button className="outline-button" onClick={reload}>重新加载</button></div>}
-        <div className="detail-body">
-          <div className="detail-author"><span className="live-author-avatar">{blog.authorIcon && !avatarFailed ? <img src={blog.authorIcon} alt="" onError={() => setAvatarFailed(true)} /> : <PersonIcon />}</span><span><strong>{blog.authorName || '未知用户'}</strong><small>{timeLabel(blog.createTime)} 发布</small></span></div>
-          <h1>{blog.title}</h1>
-          <p className="live-story-content">{blog.content}</p>
-          <StoryLikeActions likes={likes} comments={blog.comments ?? 0} />
-          <p className="preview-caption">评论功能正在准备中。</p>
-          <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
-        </div>
-      </>}
+    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={story.loading || likes.busy || followBusy}>刷新</button></header>
+    <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
+    {blog && !mismatched && !story.error && <>
+      {readableCover && !imageFailed ? <img className="detail-hero" src={cover} alt={blog.title} onError={() => setImageFailed(true)} /> : <div className="live-story-image-error"><CameraIcon /><span>图片暂时无法显示，可以刷新笔记重试。</span><button className="outline-button" onClick={reload}>重新加载</button></div>}
+      <div className="detail-body">
+        <StoryAuthor blog={blog} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onBusyChange={setFollowBusy} />
+        <h1>{blog.title}</h1>
+        <p className="live-story-content">{blog.content}</p>
+        {token ? <StoryLikeActions likes={likes} comments={blog.comments ?? 0} /> : <section className="live-like-section" aria-label="笔记互动"><div className="live-story-stats"><button type="button" className="live-like-button" onClick={onLogin}><HeartIcon aria-hidden="true" /><span>登录后点赞</span><small>{blog.liked ?? 0} 次赞</small></button><span><ChatBubbleIcon aria-hidden="true" />{blog.comments ?? 0} 条评论</span></div></section>}
+        <p className="preview-caption">评论功能正在准备中。</p>
+        <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
+      </div>
     </>}
   </>;
+}
+
+function FeedCover({ source, title }: { source: string | null; title: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [source]);
+  const readable = Boolean(source && (/^https?:\/\//i.test(source) || source.startsWith('/assets/')));
+  return readable && !failed
+    ? <img className="story-photo" src={source!} alt={title} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    : <span className="story-photo feed-cover-empty"><CameraIcon aria-hidden="true" /><span>封面暂不可用</span></span>;
+}
+
+function FeedAvatar({ source }: { source: string | null }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [source]);
+  return <span className="live-author-avatar">{source && !failed ? <img src={source} alt="" loading="lazy" onError={() => setFailed(true)} /> : <PersonIcon aria-hidden="true" />}</span>;
+}
+
+function validBlogFeedPage(value: unknown, current: number): value is BlogFeedPage {
+  if (!value || typeof value !== 'object') return false;
+  const page = value as Partial<BlogFeedPage>;
+  const validCount = (count: unknown) => count === null || (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0);
+  return typeof page.total === 'number' && Number.isSafeInteger(page.total) && page.total >= 0
+    && page.current === current && typeof page.size === 'number' && Number.isInteger(page.size) && page.size >= 1 && page.size <= 50
+    && Array.isArray(page.records) && page.records.length <= page.size
+    && page.records.every(note => note && typeof note.id === 'string' && /^[1-9]\d*$/.test(note.id)
+      && (note.userId === null || (typeof note.userId === 'string' && /^[1-9]\d*$/.test(note.userId)))
+      && typeof note.title === 'string' && typeof note.authorName === 'string'
+      && (note.coverImage === null || typeof note.coverImage === 'string')
+      && (note.authorIcon === null || typeof note.authorIcon === 'string')
+      && (note.createTime === null || typeof note.createTime === 'string')
+      && validCount(note.liked) && validCount(note.comments))
+    && new Set(page.records.map(note => note.id)).size === page.records.length;
+}
+
+function BlogFeed({ current, refreshKey, onPageChange, onOpenNote, onNew }: {
+  current: number; refreshKey: string; onPageChange: (page: number) => void;
+  onOpenNote: (id: string) => void; onNew: () => void;
+}) {
+  const result = useResource<BlogFeedPage>(`/blog/feed?current=${current}&size=10`, refreshKey);
+  const page = validBlogFeedPage(result.data, current) ? result.data : null;
+  const pages = page ? Math.max(1, Math.ceil(page.total / page.size)) : 1;
+  const outOfRange = Boolean(page && current > pages);
+  useEffect(() => { if (outOfRange) onPageChange(pages); }, [outOfRange, pages, onPageChange]);
+  const error = result.error || (!result.loading && !page ? '笔记列表返回格式不正确，请重新加载' : '');
+
+  return <section className="feed-list live-feed" aria-label="笔记广场">
+    <div className="feed-toolbar"><div><strong>笔记广场</strong><span>{page ? `最新发布 · ${page.total} 篇笔记` : '看看大家新发现的好地方'}</span></div><button type="button" className="text-button" onClick={result.reload} disabled={result.loading}>刷新列表</button></div>
+    <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
+    {page && !result.loading && !error && !outOfRange && <>
+      {page.records.length === 0 ? <div className="empty-state"><CameraIcon /><h2>第一个好地方，等你来记录</h2><p>暂时还没有笔记，分享你最近的一次发现吧。</p><button className="primary-button" onClick={onNew}>写一篇笔记</button></div> : <>
+        {page.records.map(note => <article className="story-card live-feed-card" key={note.id} data-testid="feed-note">
+          <button className="story-photo-button" onClick={() => onOpenNote(note.id)} aria-label={`查看笔记：${note.title}`}><FeedCover source={note.coverImage} title={note.title} /><span className="photo-counter">读一篇故事 <ChevronRightIcon aria-hidden="true" /></span></button>
+          <div className="author-row"><FeedAvatar source={note.authorIcon} /><div className="author-meta"><strong>{note.authorName || '未知用户'}</strong><span>{note.createTime ? `${timeLabel(note.createTime)} 发布` : '分享身边的好地方'}</span></div></div>
+          <div className="story-content"><button className="story-text-button" onClick={() => onOpenNote(note.id)}><h2>{note.title}</h2></button><div className="feed-card-footer"><div className="feed-card-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></div><button type="button" className="text-button" onClick={() => onOpenNote(note.id)}>阅读全文 <ChevronRightIcon aria-hidden="true" /></button></div></div>
+        </article>)}
+        <nav className="pagination feed-pagination" aria-label="笔记广场分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
+      </>}
+    </>}
+  </section>;
 }
 
 function NoteThumbnail({ source }: { source: string | null }) {
@@ -548,24 +739,109 @@ function MyNotes({ token, current, refreshKey, onPageChange, onLogin, onNew, onO
   </div>;
 }
 
+function validFollowPeoplePage(value: unknown, current: number): value is FollowPeoplePage {
+  if (!value || typeof value !== 'object') return false;
+  const page = value as Partial<FollowPeoplePage>;
+  return typeof page.total === 'number' && Number.isSafeInteger(page.total) && page.total >= 0
+    && page.current === current && typeof page.size === 'number' && Number.isInteger(page.size) && page.size >= 1 && page.size <= 50
+    && Array.isArray(page.records) && page.records.length <= page.size
+    && page.records.every(person => person && typeof person.userId === 'string' && positiveUserId(person.userId) !== null
+      && typeof person.nickName === 'string' && (person.icon === null || typeof person.icon === 'string')
+      && (person.followTime === null || typeof person.followTime === 'string') && typeof person.followed === 'boolean')
+    && new Set(page.records.map(person => person.userId)).size === page.records.length;
+}
+
+function FollowPersonRow({ person, mode, token, viewerId, identityLoading, identityError, onIdentityRetry, onConfirmed, onBusyChange }: {
+  person: FollowPerson; mode: FollowListMode; token: string; viewerId: string | null;
+  identityLoading: boolean; identityError: string; onIdentityRetry: () => void;
+  onConfirmed: () => void; onBusyChange: (id: string, busy: boolean) => void;
+}) {
+  const isSelf = person.userId === viewerId;
+  const needsIdentity = !viewerId || identityLoading || Boolean(identityError);
+  const follow = useAuthorFollow(person.userId, token, Boolean(token && !needsIdentity && !isSelf), person.followed, onConfirmed);
+  const { state, busy, reload, setFollowed } = follow;
+  useEffect(() => { onBusyChange(person.userId, busy); return () => onBusyChange(person.userId, false); }, [busy, onBusyChange, person.userId]);
+  const name = person.nickName || '未知用户';
+  const label = needsIdentity ? identityLoading ? '确认身份…' : '重试登录状态'
+    : state.phase === 'loading' ? '查询中…' : state.phase === 'saving' ? state.message
+    : state.uncertainTarget !== null ? state.uncertainTarget ? '确认关注' : '确认取消'
+    : state.data ? state.data.followed ? '已关注' : mode === 'followers' ? '回关' : '+ 关注' : '重试查询';
+  const actionLabel = needsIdentity ? '重试登录状态' : busy ? label
+    : state.uncertainTarget !== null ? `${state.uncertainTarget ? '重新确认关注' : '重新确认取消关注'}${name}`
+    : state.data ? `${state.data.followed ? '取消关注' : mode === 'followers' ? '回关' : '关注'}${name}` : `重试查询${name}的关注状态`;
+
+  function act() {
+    if (needsIdentity) { onIdentityRetry(); return; }
+    if (state.uncertainTarget !== null) { void setFollowed(state.uncertainTarget); return; }
+    if (!state.data) { void reload(); return; }
+    void setFollowed(!state.data.followed);
+  }
+
+  return <article className="follow-person" data-testid="follow-person" data-user-id={person.userId}>
+    <div className="follow-person-main"><FeedAvatar source={person.icon} /><div className="follow-person-info"><strong>{name}</strong><small>{person.followTime ? `${timeLabel(person.followTime)} ${mode === 'followers' ? '关注了你' : '关注'}` : '关注时间待更新'}</small></div>
+      {isSelf ? <span className="follow-person-self">自己</span> : <button type="button" className={`author-follow-button${state.data?.followed ? ' is-followed' : ''}`} data-testid="relation-follow" aria-label={actionLabel} aria-pressed={!needsIdentity ? state.data?.followed : undefined} aria-busy={busy || identityLoading} disabled={busy || identityLoading} onClick={act}>{state.data?.followed && <CheckIcon aria-hidden="true" />}<span>{label}</span></button>}
+    </div>
+    {!isSelf && <div className="author-follow-feedback" aria-live="polite">{state.message && <p role="status">{state.message}</p>}{state.error && <p className="author-follow-error" role="alert">{state.error}</p>}{!needsIdentity && (state.error || state.uncertainTarget !== null) && <button type="button" className="text-button" disabled={busy} onClick={() => void reload()}>刷新关注状态</button>}</div>}
+  </article>;
+}
+
+function FollowPeople({ mode, token, current, viewerId, identityLoading, identityError, onIdentityRetry, onPageChange, onModeChange, onLogin, onDiscover }: {
+  mode: FollowListMode; token: string; current: number; viewerId: string | null; identityLoading: boolean; identityError: string;
+  onIdentityRetry: () => void; onPageChange: (page: number) => void; onModeChange: (mode: FollowListMode) => void;
+  onLogin: () => void; onDiscover: () => void;
+}) {
+  const result = useResource<FollowPeoplePage>(token ? `/user/me/${mode}?current=${current}&size=10` : null, token);
+  const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+  const onBusyChange = useCallback((id: string, busy: boolean) => {
+    setBusyIds(previous => {
+      if (previous.has(id) === busy) return previous;
+      const next = new Set(previous);
+      if (busy) next.add(id); else next.delete(id);
+      return next;
+    });
+  }, []);
+  const busy = busyIds.size > 0;
+  const page = validFollowPeoplePage(result.data, current) ? result.data : null;
+  const pages = page ? Math.max(1, Math.ceil(page.total / page.size)) : 1;
+  const outOfRange = Boolean(page && current > pages);
+  useEffect(() => { if (outOfRange) onPageChange(pages); }, [onPageChange, outOfRange, pages]);
+  const error = result.error || (!result.loading && token && !page ? '列表返回格式不正确，请重新加载' : '');
+
+  if (!token) return <div className="empty-state"><PersonIcon /><h2>登录后，看看彼此的发现</h2><p>你的关注和粉丝会保存在账号中。</p><button className="primary-button" onClick={onLogin}>登录后查看</button></div>;
+
+  return <section className="follow-people-body" aria-label={mode === 'following' ? '我的关注列表' : '我的粉丝列表'}>
+    <div className="follow-people-tabs" role="tablist" aria-label="关注与粉丝"><button type="button" role="tab" aria-selected={mode === 'following'} disabled={busy} onClick={() => onModeChange('following')}>关注</button><button type="button" role="tab" aria-selected={mode === 'followers'} disabled={busy} onClick={() => onModeChange('followers')}>粉丝</button></div>
+    <div className="my-notes-toolbar"><span>{page ? mode === 'following' ? `已关注 ${page.total} 人` : `${page.total} 位粉丝` : '每一次相遇，都值得记下来'}</span><button type="button" className="text-button" disabled={result.loading || busy} onClick={result.reload}>刷新列表</button></div>
+    {identityError && <RequestState loading={false} error={identityError} onRetry={onIdentityRetry} />}
+    <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
+    {page && !result.loading && !error && !outOfRange && <>
+      {page.total === 0 ? <div className="empty-state follow-people-empty"><PersonIcon /><h2>{mode === 'following' ? '从一位喜欢的作者开始' : '下一次相遇，正在路上'}</h2><p>{mode === 'following' ? '读一篇喜欢的笔记，关注分享它的人。' : '继续分享好地方，让更多人认识你。'}</p><button className="primary-button" onClick={onDiscover}>去发现笔记</button></div> : <>
+        {page.records.length === 0 && <div className="request-state"><p>本页记录已变化，请刷新列表。</p><button type="button" className="outline-button" onClick={result.reload}>重新加载</button></div>}
+        <div className="follow-people-list">{page.records.map(person => <FollowPersonRow key={person.userId} person={person} mode={mode} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onConfirmed={result.reload} onBusyChange={onBusyChange} />)}</div>
+        <nav className="pagination" aria-label="关注与粉丝分页"><button type="button" disabled={busy || current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={busy || current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
+      </>}
+    </>}
+  </section>;
+}
+
 export default function Prototype() {
   const keyboard = useKeyboard();
   const [page, setPage] = useState<Page>('home');
   const currentPage = useRef<Page>(page);
   currentPage.current = page;
   const [tab, setTab] = useState<FeedTab>('推荐');
-  const [liked, setLiked] = useState<number[]>([]);
-  const [saved, setSaved] = useState<number[]>([]);
+  const [feedPage, setFeedPage] = useState(1);
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [draft, setDraft] = useState({ title: '', body: '' });
   const photoInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState('');
   const toastTimer = useRef<number | undefined>(undefined);
-  const [selectedPost, setSelectedPost] = useState(1);
   const [selectedBlogId, setSelectedBlogId] = useState<string | null>(null);
   const [storyReturn, setStoryReturn] = useState<'home' | 'myNotes'>('home');
   const [myNotesPage, setMyNotesPage] = useState(1);
+  const [followingPage, setFollowingPage] = useState(1);
+  const [followersPage, setFollowersPage] = useState(1);
   const [lastPublished, setLastPublished] = useState<{ id: string; title: string; token: string } | null>(null);
   const [publishPhase, setPublishPhase] = useState<PublishPhase>('idle');
   const [publishError, setPublishError] = useState('');
@@ -596,8 +872,8 @@ export default function Prototype() {
   const vouchers = useResource<Voucher[]>(selectedShopId === null ? null : `/voucher/list/${selectedShopId}`);
   const search = useResource<Shop[]>(page === 'search' ? `/shop/of/name?name=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}` : null);
   const me = useResource<User>(token ? '/user/me' : null, token);
-  const activePost = posts.find(post => post.id === selectedPost) || posts[0];
   const showNav = ['home', 'nearby', 'publish', 'messages', 'profile'].includes(page);
+  const relationMode: FollowListMode | null = page === 'following' || page === 'followers' ? page : null;
   const secondsLeft = Math.max(0, Math.ceil((codeUntil - now) / 1000));
 
   const flash = useCallback((message: string) => {
@@ -608,12 +884,17 @@ export default function Prototype() {
   function navigate(destination: Page) { keyboard.hide(); currentPage.current = destination; setPage(destination); }
   function openShop(id: number) { setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
-  function openStory(id: number) { setSelectedBlogId(null); setSelectedPost(id); navigate('story'); }
+  function startNewNote() { if (!token) { openLogin('publish'); return; } navigate('publish'); }
   function openPublishedStory(id: string, returnTo: 'home' | 'myNotes' = 'home') { setSelectedBlogId(id); setStoryReturn(returnTo); navigate('story'); }
   function openMyNotes() {
     setMyNotesPage(1);
     if (!token) { openLogin('myNotes'); return; }
     navigate('myNotes');
+  }
+  function openFollowPeople(mode: FollowListMode) {
+    if (mode === 'following') setFollowingPage(1); else setFollowersPage(1);
+    if (!token) { openLogin(mode); return; }
+    navigate(mode);
   }
   function choosePhoto() {
     if (publishRequest.current) return;
@@ -621,7 +902,6 @@ export default function Prototype() {
     if (!token) { openLogin('publish'); return; }
     if (photoUpload.photo.phase !== 'uploading') photoInput.current?.click();
   }
-  function toggle(id: number, values: number[], setter: (value: number[]) => void) { setter(values.includes(id) ? values.filter(value => value !== id) : [...values, id]); }
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -647,6 +927,8 @@ export default function Prototype() {
     setPublishError('');
     setLastPublished(null);
     setMyNotesPage(1);
+    setFollowingPage(1);
+    setFollowersPage(1);
     return () => {
       publishRequest.current?.abort();
       publishRequest.current = null;
@@ -679,6 +961,7 @@ export default function Prototype() {
       const id = typeof result === 'string' ? result : typeof result === 'number' && Number.isSafeInteger(result) ? String(result) : '';
       if (!/^[1-9]\d*$/.test(id)) throw new Error('发布响应没有返回有效的笔记编号');
       setLastPublished({ id, title, token });
+      setFeedPage(1);
       setMyNotesPage(1);
       setPublishPhase('idle');
       setDraft({ title: '', body: '' });
@@ -757,17 +1040,14 @@ export default function Prototype() {
 
   return <div className="m1-app">
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
-    <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}`} key={page}>
+    {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
+    <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
-        <button className="live-entry" onClick={() => navigate('nearby')}><MapPinIcon /><span><strong>去逛逛真实的小店</strong><small>店铺信息与优惠券已连接服务端</small></span><ChevronRightIcon /></button>
+        <button className="live-entry" onClick={() => navigate('nearby')}><MapPinIcon /><span><strong>去逛逛附近的小店</strong><small>发现附近小店和优惠券</small></span><ChevronRightIcon /></button>
         {lastPublished && lastPublished.token === token && <button className="live-entry recent-story-entry" onClick={() => openPublishedStory(lastPublished.id)}><CheckIcon /><span><strong>{lastPublished.title}</strong><small>刚刚发布 · 查看你的故事</small></span><ChevronRightIcon /></button>}
-        {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注与故事服务正在准备中。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <div className="feed-list"><p className="preview-caption">灵感故事 · 内容预览，互动仅在当前页面保留</p>{posts.map((post, index) => <article className="story-card" key={post.id}>
-          <button className="story-photo-button" onClick={() => openStory(post.id)} aria-label={`查看${post.title}`}><img className="story-photo" src={asset + post.photo} alt={post.title} /><span className="photo-counter">0{index + 1} / 0{posts.length}</span></button>
-          <div className="author-row"><img className="avatar" src={asset + 'creator-avatar.png'} alt="" /><div className="author-meta"><strong>{post.author}</strong><span>{post.time} · {post.location}</span></div></div>
-          <div className="story-content"><button className="story-text-button" onClick={() => openStory(post.id)}><h2>{post.title}</h2><p>{post.excerpt}</p></button><div className="story-actions"><button onClick={() => toggle(post.id, liked, setLiked)} aria-label="预览点赞">{liked.includes(post.id) ? <HeartFilledIcon className="filled-heart" /> : <HeartIcon />}<span>{post.likes + (liked.includes(post.id) ? 1 : 0)}</span></button><button onClick={() => openStory(post.id)}><ChatBubbleIcon /><span>读故事</span></button><button onClick={() => toggle(post.id, saved, setSaved)} aria-label="预览收藏"><BookmarkIcon className={saved.includes(post.id) ? 'saved-icon' : ''} /><span>{saved.includes(post.id) ? '已收藏' : '收藏'}</span></button></div><button className="coral-button visit-button" onClick={() => navigate('nearby')}>发现身边的小店 <ChevronRightIcon /></button></div>
-        </article>)}</div>}
+        {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注功能正在准备中，先看看大家的最新笔记。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <BlogFeed current={feedPage} refreshKey={lastPublished?.id || ''} onPageChange={setFeedPage} onOpenNote={id => openPublishedStory(id)} onNew={startNewNote} />}
       </>}
 
       {page === 'nearby' && <>
@@ -802,20 +1082,19 @@ export default function Prototype() {
       {page === 'profile' && <>
         <header className="profile-header"><span className="eyebrow">YOUR LITTLE CORNER</span><h1>我的巷里<span className="accent-dot">.</span></h1><div className="profile-identity"><div className="profile-avatar"><PersonIcon /></div><span><strong>{me.data?.nickName || (token ? me.error ? '暂时无法加载个人信息' : '正在确认登录状态' : '欢迎来巷里走走')}</strong><small>{me.data ? `账号 ID：${me.data.id}` : token ? me.error ? '请重试下方请求' : '连接你的巷里账号' : '登录后，开启你的巷里生活'}</small></span>{!token && <button className="outline-button" onClick={() => openLogin()}>登录</button>}</div></header>
         {token && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
-        <div className="profile-menu"><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
+        <div className="profile-menu"><button onClick={openMyNotes}><CameraIcon /> 我的笔记 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('following')}><PersonIcon /> 我的关注 <ChevronRightIcon /></button><button onClick={() => openFollowPeople('followers')}><HeartIcon /> 我的粉丝 <ChevronRightIcon /></button><button onClick={() => navigate('nearby')}><MapPinIcon /> 发现店铺 <ChevronRightIcon /></button><button onClick={() => { navigate('nearby'); flash('进入优惠券详情，可查看当前账号的对应订单'); }}><StarFilledIcon /> 优惠与订单 <ChevronRightIcon /></button><button onClick={() => flash('巷里，发现身边值得一去的小店')}><HeartIcon /> 关于巷里 <ChevronRightIcon /></button>{token ? <button onClick={logout} disabled={loggingOut}><PersonIcon />{loggingOut ? '正在退出…' : '退出登录'}<ChevronRightIcon /></button> : <button onClick={() => openLogin()}><PersonIcon /> 手机号登录 <ChevronRightIcon /></button>}</div>
       </>}
 
       {page === 'myNotes' && <MyNotes token={token} current={myNotesPage} refreshKey={lastPublished?.id || ''} onPageChange={setMyNotesPage} onLogin={() => openLogin('myNotes')} onNew={() => navigate('publish')} onOpenNote={id => openPublishedStory(id, 'myNotes')} />}
+
+      {relationMode && <FollowPeople mode={relationMode} token={token} current={relationMode === 'following' ? followingPage : followersPage} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onPageChange={relationMode === 'following' ? setFollowingPage : setFollowersPage} onModeChange={openFollowPeople} onLogin={() => openLogin(relationMode)} onDiscover={() => { setTab('推荐'); navigate('home'); }} />}
 
       {page === 'login' && <>
         <header className="page-header"><button aria-label="返回" onClick={() => { loginAttempt.current += 1; setLoggingIn(false); navigate(loginReturn); }}><ArrowLeftIcon /></button><span>登录巷里</span><span /></header>
         <div className="login-body"><span className="eyebrow">GOOD TO SEE YOU</span><h1>好久不见<span className="accent-dot">.</span></h1><p>用手机号，找回你的巷里生活。</p><form onSubmit={event => { event.preventDefault(); void login(); }}><label htmlFor="login-phone">手机号</label><KeyboardInput id="login-phone" type="tel" inputMode="numeric" autoComplete="tel" value={phone} maxLength={11} disabled={loggingIn || sendingCode} onChange={event => setPhone(event.target.value.replace(/\D/g, ''))} placeholder="请输入 11 位手机号" /><label htmlFor="login-code">验证码</label><div className="verification-row"><KeyboardInput id="login-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} disabled={loggingIn} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="六位验证码" /><button type="button" onClick={() => void sendCode()} disabled={sendingCode || secondsLeft > 0 || loggingIn}>{sendingCode ? '请求中…' : secondsLeft > 0 ? `${secondsLeft}s 后重试` : '获取验证码'}</button></div>{loginError && <p className="form-error" role="alert">{loginError}</p>}<button className="coral-button" type="submit" disabled={loggingIn}>{loggingIn ? '正在登录…' : '登录 / 注册'}</button></form><p className="login-note">首次登录将自动创建账号。本地调试的验证码请查看用户服务控制台，当前未接入真实短信。</p></div>
       </>}
 
-      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} onBack={() => navigate(storyReturn)} onLogin={() => openLogin('story')} onNew={() => navigate('publish')} />}
-      {page === 'story' && !selectedBlogId && <>
-        <header className="page-header"><button onClick={() => navigate('home')} aria-label="返回"><ArrowLeftIcon /></button><span>巷里故事 · 内容预览</span><button onClick={() => toggle(activePost.id, saved, setSaved)} aria-label="预览收藏"><BookmarkIcon className={saved.includes(activePost.id) ? 'saved-icon' : ''} /></button></header><img className="detail-hero" src={asset + activePost.photo} alt={activePost.title} /><div className="detail-body"><div className="detail-author"><img className="avatar" src={asset + 'creator-avatar.png'} alt="" /><span><strong>{activePost.author}</strong><small>{activePost.time} · {activePost.location}</small></span></div><h1>{activePost.title}</h1><p>{activePost.excerpt}</p><p>有时候，最喜欢的地方是走着走着碰到的。店里放着轻轻的音乐，热腾腾的一餐刚好抚平忙碌的一天。</p><div className="story-location"><MapPinIcon />{activePost.location} · {activePost.shop}</div><button className="coral-button" onClick={() => navigate('nearby')}>逛逛真实的小店 <ChevronRightIcon /></button><div className="detail-divider" /><p className="preview-caption">这是一篇内容预览，故事发布、评论与关注功能正在准备中。</p></div>
-      </>}
+      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={() => navigate(storyReturn)} onLogin={() => openLogin('story')} onNew={startNewNote} />}
 
       {page === 'publish' && <>
         <header className="sub-header"><div><span className="eyebrow">SHARE YOUR MOMENT</span><h1>记下一个好地方<span className="accent-dot">.</span></h1></div></header>

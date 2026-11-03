@@ -40,6 +40,11 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+        <dependency>
             <groupId>com.m1kasa</groupId>
             <artifactId>m1kasa-user-api</artifactId>
             <version>${project.version}</version>

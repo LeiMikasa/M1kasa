@@ -215,8 +215,7 @@ public class BlogController {
             @RequestParam(
                     name = "size",
                     defaultValue = "10"
-            ) int size,
-            @RequestHeader("Authorization") String authorization
+            ) int size
     ){
         try {
             BlogFeedPageDTO page = blogQueryService.findFeed(

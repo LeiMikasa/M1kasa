@@ -58,7 +58,7 @@ public class UserController {
         }
     }
     //公开接口
-    @GetMapping("/publish/batch")
+    @GetMapping("/public/batch")
     public ResponseEntity<Result<List<UserDTO>>> listPublicByIds(
             @RequestParam("ids") List<Long> ids
     ){
