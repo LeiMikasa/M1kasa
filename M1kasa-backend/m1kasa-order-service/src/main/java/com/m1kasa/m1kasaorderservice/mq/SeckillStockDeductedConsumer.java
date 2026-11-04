@@ -27,7 +27,7 @@ public class SeckillStockDeductedConsumer {
                             durable = "true",
                             arguments = {
                                     @Argument(
-                                            name = "x=dead-letter-exchange",
+                                            name = "x-dead-letter-exchange",
                                             value = "m1kasa.order.stock.confirm.dlx"
                                     ),
                                     @Argument(

@@ -5,8 +5,10 @@ import com.m1kasa.m1kasaorderservice.entity.VoucherOrder;
 import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
 import com.m1kasa.m1kasaorderservice.service.OrderStockConfirmService;
 import com.m1kasa.voucher.api.message.SeckillStockDeductedMessage;
+import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+@Service
 public class OrderStockConfirmServiceImpl implements OrderStockConfirmService {
 
     private final VoucherOrderMapper voucherOrderMapper;
