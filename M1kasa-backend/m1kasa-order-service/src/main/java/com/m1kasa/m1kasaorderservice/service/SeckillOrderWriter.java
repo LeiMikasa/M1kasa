@@ -32,7 +32,7 @@ public class SeckillOrderWriter {
         order.setRequestId(message.requestId());
         order.setUserId(message.userId());
         order.setVoucherId(message.voucherId());
-        order.setStatus(OrderStatus.WAITING_PAYMENT);
+        order.setStatus(OrderStatus.WAITING_STOCK);
         order.setCreateTime(now);
         order.setUpdateTime(now);
 

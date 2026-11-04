@@ -41,6 +41,29 @@ public class RabbitMessageConfig {
         return new Declarables(exchange, queue, binding);
     }
 
+    @Bean
+    public Declarables stockConfirmDeadLetterDeclarables() {
+        DirectExchange exchange = new DirectExchange(
+                "m1kasa.order.stock.confirm.dlx",
+                true,
+                false
+        );
+
+        Queue queue = new Queue(
+                "m1kasa.order.stock.confirm.dlq",
+                true,
+                false,
+                false
+        );
+
+        Binding binding = BindingBuilder
+                .bind(queue)
+                .to(exchange)
+                .with("seckill.stock.confirm.failed");
+
+        return new Declarables(exchange, queue, binding);
+    }
+
 
 
 }

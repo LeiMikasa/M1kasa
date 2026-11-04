@@ -561,3 +561,6 @@
 .story-image-slide > .story-gallery-prev { left:10px; }
 .story-image-slide > .story-gallery-next { right:10px; }
 .story-gallery-guide { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 18px; color:var(--muted); font-size:10px; }
+
+.story-detail-header { position:absolute; inset:0 0 auto; z-index:12; }
+.story-detail-scroll .mobile-scroll,.story-detail-scroll .mobile-scrollbar { top:92px; }

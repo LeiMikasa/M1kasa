@@ -813,7 +813,7 @@ function StoryGallery({imageUrls, coverImage, title, onReload}: {imageUrls?: str
         {sources.length > 1 && <><figcaption>{index + 1} / {sources.length}</figcaption><button type="button" className="story-gallery-prev" aria-label="上一张图片" tabIndex={index === active ? 0 : -1} disabled={index === 0} onClick={() => show(index - 1)}><ChevronLeftIcon /></button><button type="button" className="story-gallery-next" aria-label="下一张图片" tabIndex={index === active ? 0 : -1} disabled={index === sources.length - 1} onClick={() => show(index + 1)}><ChevronRightIcon /></button></>}
       </figure>)}
     </Carousel>
-    {sources.length > 1 && <div className="story-gallery-guide"><span>左右滑动查看图片</span><span role="status" aria-live="polite">{active + 1} / {sources.length}</span></div>}
+    {sources.length > 1 && <div className="story-gallery-guide"><span>左右滑动查看图片</span><span className="visually-hidden" role="status" aria-live="polite">{active + 1} / {sources.length}</span></div>}
   </div>;
 }
 
@@ -829,7 +829,8 @@ function PublishedStory({ blogId, token, viewerId, identityLoading, identityErro
   const mismatched = Boolean(blog && String(blog.id) !== blogId);
 
   return <>
-    <header className="page-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={story.loading || likes.busy || followBusy}>刷新</button></header>
+    <header className="page-header story-detail-header"><button onClick={onBack} aria-label="返回上一页"><ArrowLeftIcon /></button><span>巷里故事</span><button className="text-button live-story-refresh" onClick={reload} disabled={story.loading || likes.busy || followBusy}>刷新</button></header>
+    <MobileScroll className="m1-scroll full-page story-detail-scroll">
     <RequestState loading={story.loading} error={story.error || (mismatched ? '笔记响应与当前内容不一致，请重新加载' : '')} onRetry={reload} />
     {blog && !mismatched && !story.error && <>
       <StoryGallery imageUrls={blog.imageUrls} coverImage={blog.coverImage} title={blog.title} onReload={reload} />
@@ -842,6 +843,7 @@ function PublishedStory({ blogId, token, viewerId, identityLoading, identityErro
         <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
       </div>
     </>}
+    </MobileScroll>
   </>;
 }
 
@@ -1612,7 +1614,7 @@ export default function Prototype() {
   return <div className="m1-app">
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
@@ -1665,7 +1667,6 @@ export default function Prototype() {
         <div className="login-body"><span className="eyebrow">GOOD TO SEE YOU</span><h1>好久不见<span className="accent-dot">.</span></h1><p>用手机号，找回你的巷里生活。</p><form onSubmit={event => { event.preventDefault(); void login(); }}><label htmlFor="login-phone">手机号</label><KeyboardInput id="login-phone" type="tel" inputMode="numeric" autoComplete="tel" value={phone} maxLength={11} disabled={loggingIn || sendingCode} onChange={event => setPhone(event.target.value.replace(/\D/g, ''))} placeholder="请输入 11 位手机号" /><label htmlFor="login-code">验证码</label><div className="verification-row"><KeyboardInput id="login-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} disabled={loggingIn} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="六位验证码" /><button type="button" onClick={() => void sendCode()} disabled={sendingCode || secondsLeft > 0 || loggingIn}>{sendingCode ? '请求中…' : secondsLeft > 0 ? `${secondsLeft}s 后重试` : '获取验证码'}</button></div>{loginError && <p className="form-error" role="alert">{loginError}</p>}<button className="coral-button" type="submit" disabled={loggingIn}>{loggingIn ? '正在登录…' : '登录 / 注册'}</button></form><p className="login-note">首次登录将自动创建账号。本地调试的验证码请查看用户服务控制台，当前未接入真实短信。</p></div>
       </>}
 
-      {page === 'story' && selectedBlogId && <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} />}
 
       {page === 'publish' && <>
         <header className="sub-header"><div><span className="eyebrow">SHARE YOUR MOMENT</span><h1>记下一个好地方<span className="accent-dot">.</span></h1></div></header>
@@ -1680,8 +1681,8 @@ export default function Prototype() {
           }} />
           {token && (me.loading || me.error) && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
           <NotePhotoGrid upload={notePhotos} token={token} disabled={publishPhase === 'submitting'} onChoose={choosePhoto} />
-          <label>一句话标题<KeyboardInput value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" /></label>
-          <label>说说你的故事<KeyboardTextarea value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} /></label>
+          <label htmlFor="note-title">一句话标题</label><KeyboardInput id="note-title" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" />
+          <label htmlFor="note-content">说说你的故事</label><KeyboardTextarea id="note-content" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} />
           <small className="draft-counter">{draft.body.length} / 10000</small>
           <p className="checkout-note">发布后可以查看完整故事。发布前，草稿仅在当前页面暂存，刷新后不会保留。</p>
           {publishError && <p className="form-error publish-error" role="alert">{publishError}</p>}
