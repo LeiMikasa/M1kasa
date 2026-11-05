@@ -4,7 +4,8 @@ public final class SeckillRedisKeys {
     private SeckillRedisKeys(){
 
     }
-
+    public static final String OUTBOX_PREFIX =
+            "m1kasa:seckill:outbox:{";
     public static String activity(Long voucherId){
         return "m1kasa:seckill:activity:{"+voucherId+"}";
     }
@@ -25,8 +26,8 @@ public final class SeckillRedisKeys {
     *
     *
     * */
-    public static String outbox(Long voucherId){
-        return "m1kasa:seckill:outbox:{"+voucherId+"}";
+    public static String outbox(Long voucherId) {
+        return OUTBOX_PREFIX + voucherId + "}";
     }
 
     public static String reservation(

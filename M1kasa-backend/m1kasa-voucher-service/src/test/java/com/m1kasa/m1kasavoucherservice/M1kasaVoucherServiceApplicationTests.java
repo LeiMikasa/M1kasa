@@ -8,6 +8,7 @@ class M1kasaVoucherServiceApplicationTests {
 
     @Test
     void contextLoads() {
+
     }
 
 }

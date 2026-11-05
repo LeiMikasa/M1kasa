@@ -7,9 +7,12 @@ import com.m1kasa.m1kasavoucherservice.entity.Voucher;
 import com.m1kasa.m1kasavoucherservice.enums.SeckillReserveStatus;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillVoucherMapper;
 import com.m1kasa.m1kasavoucherservice.mapper.VoucherMapper;
+import com.m1kasa.m1kasavoucherservice.mq.SeckillOutboxDispatcher;
 import com.m1kasa.m1kasavoucherservice.service.VoucherService;
 import com.m1kasa.m1kasavoucherservice.web.SeckillVoucherCreateRequest;
 import com.m1kasa.voucher.api.VoucherDTO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -25,7 +28,10 @@ import java.util.UUID;
 
 @Service
 public class VoucherServiceImpl implements VoucherService {
+    private static final Logger log =
+            LoggerFactory.getLogger(VoucherServiceImpl.class);
 
+    private final SeckillOutboxDispatcher outboxDispatcher;
     private final VoucherMapper voucherMapper;
     private final SeckillVoucherMapper seckillVoucherMapper;
     private final StringRedisTemplate stringRedisTemplate;
@@ -43,7 +49,8 @@ public class VoucherServiceImpl implements VoucherService {
         );
         RESERVE_SCRIPT.setResultType(Long.class);
     }
-    public VoucherServiceImpl(VoucherMapper voucherMapper, SeckillVoucherMapper seckillVoucherMapper, StringRedisTemplate stringRedisTemplate) {
+    public VoucherServiceImpl(SeckillOutboxDispatcher outboxDispatcher, VoucherMapper voucherMapper, SeckillVoucherMapper seckillVoucherMapper, StringRedisTemplate stringRedisTemplate) {
+        this.outboxDispatcher = outboxDispatcher;
         this.voucherMapper = voucherMapper;
         this.seckillVoucherMapper = seckillVoucherMapper;
         this.stringRedisTemplate = stringRedisTemplate;
@@ -228,7 +235,28 @@ public class VoucherServiceImpl implements VoucherService {
               throw new IllegalStateException("抢劵脚本未返回结果");
           }
           return switch (Math.toIntExact(result)){
-              case 0->SeckillReserveStatus.RESERVED;
+              case 0-> {
+                  //lua已经完成预占，并保存了outbox
+                  //现在立刻尝试投递，不等待投递结果
+                  outboxDispatcher.dispatchOne(
+                          voucherId,
+                          requestId,
+                          userId
+                  ).whenComplete((unused, error) -> {
+                      if (error != null) {
+                          // 投递失败时，Outbox 保留，由定时任务继续补发
+                          log.warn(
+                                  "即时下单消息投递未完成，等待 Outbox 补发，"
+                                          + "voucherId={}, requestId={}",
+                                  voucherId,
+                                  requestId,
+                                  error
+                          );
+                      }
+                  });
+                  // 返回已经获得抢券资格
+                  yield SeckillReserveStatus.RESERVED;
+              }
               case 1->SeckillReserveStatus.SOLD_OUT;
               case 2->SeckillReserveStatus.DUPLICATE;
               case 3 -> SeckillReserveStatus.NOT_STARTED;
