@@ -4,6 +4,8 @@ import com.m1kasa.m1kasaorderservice.constant.OrderStatus;
 import com.m1kasa.m1kasaorderservice.entity.VoucherOrder;
 import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
 import com.m1kasa.m1kasaorderservice.service.OrderStockConfirmService;
+import com.m1kasa.m1kasaorderservice.statemachine.OrderEvent;
+import com.m1kasa.m1kasaorderservice.statemachine.OrderStateMachine;
 import com.m1kasa.voucher.api.message.SeckillStockDeductedMessage;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -12,22 +14,26 @@ import org.springframework.util.StringUtils;
 public class OrderStockConfirmServiceImpl implements OrderStockConfirmService {
 
     private final VoucherOrderMapper voucherOrderMapper;
-
-    public OrderStockConfirmServiceImpl(VoucherOrderMapper voucherOrderMapper) {
+    private final OrderStateMachine orderStateMachine;
+    public OrderStockConfirmServiceImpl(VoucherOrderMapper voucherOrderMapper, OrderStateMachine orderStateMachine) {
         this.voucherOrderMapper = voucherOrderMapper;
+        this.orderStateMachine = orderStateMachine;
     }
 
     @Override
     public void confirm(SeckillStockDeductedMessage message) {
           validateMessage(message);
+          //根据库存成功事件取得状态转换规则
+          OrderStateMachine.Transition transition=
+                  orderStateMachine.getTransition(OrderEvent.STOCK_DEDUCTED);
           //1.尝试将库存确认中更新为待支付
         int affected = voucherOrderMapper.confirmStock(
                 message.orderId(),
                 message.requestId(),
                 message.voucherId(),
                 message.userId(),
-                OrderStatus.WAITING_STOCK,
-                OrderStatus.WAITING_PAYMENT
+                transition.sourceStatus(),
+                transition.targetStatus()
         );
         if (affected==1){
             return;

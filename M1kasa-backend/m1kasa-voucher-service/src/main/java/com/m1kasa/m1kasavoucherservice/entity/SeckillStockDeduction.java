@@ -14,7 +14,27 @@ public class SeckillStockDeduction {
     private String requestId;
     private Long voucherId;
     private Long userId;
+    // 库存处理结果
+    private Integer resultStatus;
+    // 明确拒绝时的原因代码，成功时为空
+    private String failureCode;
     private LocalDateTime createTime;
+
+    public String getFailureCode() {
+        return failureCode;
+    }
+
+    public void setFailureCode(String failureCode) {
+        this.failureCode = failureCode;
+    }
+
+    public Integer getResultStatus() {
+        return resultStatus;
+    }
+
+    public void setResultStatus(Integer resultStatus) {
+        this.resultStatus = resultStatus;
+    }
 
     public Long getOrderId() {
         return orderId;

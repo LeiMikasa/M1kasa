@@ -18,11 +18,23 @@ local buyersKey = KEYS[2]
 local userId = ARGV[1]
 
 local outboxKey = KEYS[3]
+-- 本次请求的预占凭证
+local reservationKey = KEYS[4]
 local requestId = ARGV[2]
 
 if not requestId or requestId == '' then
     return 5
 end
+
+if not reservationKey or reservationKey == '' then
+    return 5
+end
+
+-- 已存在的凭证不能被覆盖
+if redis.call('EXISTS', reservationKey) == 1 then
+    return 5
+end
+
 
 -- 提前检查待发送记录的类型，避免写入时发生 WRONGTYPE
 local outboxType = redis.call('TYPE', outboxKey).ok
@@ -42,6 +54,16 @@ local endTime = tonumber(activity[3] or '')
 if not stock or not beginTime or not endTime then
     return 5
 end
+
+-- 活动因库存异常被暂停，停止接受新的预占
+local paused = redis.call('HGET', activityKey, 'paused')
+
+if paused == '1' then
+    return 6
+end
+
+-- 后面继续原来的时间判断
+
 
 -- 2.使用redis的时间，单位转换为毫秒
 local redisTime = redis.call('TIME')
@@ -74,5 +96,13 @@ redis.call('SADD', buyersKey, userId)
 
 -- 保存待发送的下单消息记录
 redis.call('HSET', outboxKey, requestId, userId)
+
+redis.call(
+    'HSET',
+    reservationKey,
+    'requestId', requestId,
+    'userId', userId,
+    'state', 'RESERVED'
+)
 
 return 0

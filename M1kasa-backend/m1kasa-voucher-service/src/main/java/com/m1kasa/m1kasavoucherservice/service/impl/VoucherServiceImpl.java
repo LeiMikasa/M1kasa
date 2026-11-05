@@ -213,16 +213,17 @@ public class VoucherServiceImpl implements VoucherService {
               throw new IllegalArgumentException("用户ID不合法");
           }
           String requestId= UUID.randomUUID().toString();
-          Long result=stringRedisTemplate.execute(
-                  RESERVE_SCRIPT,
-                  List.of(
-                          SeckillRedisKeys.activity(voucherId),
-                          SeckillRedisKeys.buyers(voucherId),
-                          SeckillRedisKeys.outbox(voucherId)
-                  ),
-                  userId.toString(),
-                  requestId
-          );
+        Long result = stringRedisTemplate.execute(
+                RESERVE_SCRIPT,
+                List.of(
+                        SeckillRedisKeys.activity(voucherId),
+                        SeckillRedisKeys.buyers(voucherId),
+                        SeckillRedisKeys.outbox(voucherId),
+                        SeckillRedisKeys.reservation(voucherId, requestId)
+                ),
+                userId.toString(),
+                requestId
+        );
           if (result==null){
               throw new IllegalStateException("抢劵脚本未返回结果");
           }
@@ -233,6 +234,7 @@ public class VoucherServiceImpl implements VoucherService {
               case 3 -> SeckillReserveStatus.NOT_STARTED;
               case 4 -> SeckillReserveStatus.ENDED;
               case 5 -> SeckillReserveStatus.NOT_INITIALIZED;
+              case 6 -> SeckillReserveStatus.PAUSED;
               default -> throw new IllegalStateException(
                       "抢券脚本返回了未知结果：" + result
               );

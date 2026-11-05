@@ -23,10 +23,30 @@ public class SeckillStockOutbox {
     // 0：待发送
     // 1：已通过发布确认和路由检查
     private Integer status;
+    // 库存处理结果
+    private Integer resultStatus;
 
+    // 明确拒绝时的原因代码，成功时为空
+    private String failureCode;
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;
+
+    public Integer getResultStatus() {
+        return resultStatus;
+    }
+
+    public void setResultStatus(Integer resultStatus) {
+        this.resultStatus = resultStatus;
+    }
+
+    public String getFailureCode() {
+        return failureCode;
+    }
+
+    public void setFailureCode(String failureCode) {
+        this.failureCode = failureCode;
+    }
 
     public Long getId() {
         return id;

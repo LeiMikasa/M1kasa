@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasavoucherservice.service;
 
+import com.m1kasa.m1kasavoucherservice.constant.SeckillStockResultStatus;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillStockDeduction;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillStockOutbox;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillStockDeductionMapper;
@@ -33,7 +34,7 @@ public class SeckillStockWriter {
         record.setUserId(message.userId());
         record.setVoucherId(message.voucherId());
         record.setCreateTime(now);
-
+        record.setResultStatus(SeckillStockResultStatus.PROCESSING);
         if (deductionMapper.insert(record)!=1){
             throw new IllegalStateException("保存库存扣减记录失败");
         }
@@ -42,24 +43,34 @@ public class SeckillStockWriter {
         int affected=seckillVoucherMapper.deductStock(
                 message.voucherId()
         );
-        if (affected!=1){
-            // 抛异常，让刚才插入的扣减记录一起回滚
-            throw new IllegalStateException(
-                    "数据库库存扣减失败，活动不存在或库存不足"
-            );
+        if (affected==1){
+            record.setResultStatus(SeckillStockResultStatus.DEDUCTED);
+        }else if (affected==0){
+            //当前SQL没有匹配到可扣减库存
+            //活动不存在，或者库存不大于0
+            record.setResultStatus(SeckillStockResultStatus.REJECTED);
+            record.setFailureCode("STOCK_UNAVAILABLE");
+        }else {
+            throw new IllegalStateException("库存扣减影响行数异常："+affected);
         }
-        //3.保存待发送的"库存扣减成功"事件
+        //3.保存本次请求的处理结果
+        if (deductionMapper.updateById(record)!=1){
+            throw new IllegalStateException("保存库存处理结果失败");
+        }
+        //4.保存待发送的结果通知
         SeckillStockOutbox outbox=new SeckillStockOutbox();
         outbox.setRequestId(message.requestId());
         outbox.setOrderId(message.orderId());
         outbox.setVoucherId(message.voucherId());
         outbox.setUserId(message.userId());
-        //等待后台任务发送
+
+        outbox.setResultStatus(record.getResultStatus());
+        outbox.setFailureCode(record.getFailureCode());
         outbox.setStatus(0);
         outbox.setCreateTime(now);
         outbox.setUpdateTime(now);
-        if (outboxMapper.insert(outbox)!=1){
-            throw new IllegalStateException("保存库存成功事件-失败");
+        if (outboxMapper.insert(outbox) != 1) {
+            throw new IllegalStateException("保存库存结果事件失败");
         }
     }
 }

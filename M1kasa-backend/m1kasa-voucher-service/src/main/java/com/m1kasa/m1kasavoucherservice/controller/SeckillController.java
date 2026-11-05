@@ -55,6 +55,9 @@ public class SeckillController {
             case NOT_INITIALIZED -> ResponseEntity
                     .status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Result.fail("活动暂不可用，请稍后重试"));
+            case PAUSED -> ResponseEntity
+                    .status(HttpStatus.CONFLICT)
+                    .body(Result.fail("活动暂时停止抢券，请稍后再试"));
         };
 
     }

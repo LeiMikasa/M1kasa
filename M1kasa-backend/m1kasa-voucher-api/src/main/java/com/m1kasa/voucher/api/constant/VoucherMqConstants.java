@@ -12,4 +12,8 @@ public final class VoucherMqConstants {
     // 库存扣减成功事件的路由键
     public static final String STOCK_DEDUCTED_ROUTING_KEY =
             "seckill.stock.deducted";
+
+    // 库存处理明确拒绝事件
+    public static final String STOCK_REJECTED_ROUTING_KEY =
+            "seckill.stock.rejected";
 }

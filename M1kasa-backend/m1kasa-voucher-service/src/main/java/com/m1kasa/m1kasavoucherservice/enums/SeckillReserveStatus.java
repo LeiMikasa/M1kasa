@@ -6,5 +6,6 @@ public enum SeckillReserveStatus {
     DUPLICATE,//重复领取
     NOT_STARTED,//尚未开始
     ENDED,//已经结束
-    NOT_INITIALIZED //活动未初始化或者数据不完整
+    NOT_INITIALIZED, //活动未初始化或者数据不完整
+    PAUSED //活动已暂停
 }

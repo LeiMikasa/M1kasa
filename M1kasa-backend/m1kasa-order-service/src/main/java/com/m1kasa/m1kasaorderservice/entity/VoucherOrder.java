@@ -21,9 +21,19 @@ public class VoucherOrder {
 
     private Integer status;
 
+    private String failureCode;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;
+
+    public String getFailureCode() {
+        return failureCode;
+    }
+
+    public void setFailureCode(String failureCode) {
+        this.failureCode = failureCode;
+    }
 
     public Long getId() {
         return id;

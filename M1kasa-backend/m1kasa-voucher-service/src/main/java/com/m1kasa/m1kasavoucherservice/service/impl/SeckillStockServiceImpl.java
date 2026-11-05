@@ -1,6 +1,7 @@
 package com.m1kasa.m1kasavoucherservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.m1kasa.m1kasavoucherservice.constant.SeckillStockResultStatus;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillStockDeduction;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillStockDeductionMapper;
 import com.m1kasa.m1kasavoucherservice.service.SeckillStockService;
@@ -47,6 +48,7 @@ public class SeckillStockServiceImpl implements SeckillStockService {
             throw new IllegalArgumentException("订单创建事件参数不合法");
         }
     }
+    //触发唯一约束之后，检查是不否已有最终结果，成功或明确拒绝，主要是避免二次消费
     private void verifyAlreadyProcess(
             SeckillOrderCreatedMessage message,
             DuplicateKeyException cause
@@ -80,7 +82,24 @@ public class SeckillStockServiceImpl implements SeckillStockService {
                     cause
             );
         }
-        // 内容完全相同，说明之前已经扣减成功，正常结束即可
+        Integer resultStatus = existing.getResultStatus();
+
+        boolean finished =
+                Integer.valueOf(SeckillStockResultStatus.DEDUCTED)
+                        .equals(resultStatus)
+                        || Integer.valueOf(SeckillStockResultStatus.REJECTED)
+                        .equals(resultStatus);
+
+        if (!finished) {
+            throw new IllegalStateException(
+                    "库存请求尚无有效的最终处理结果",
+                    cause
+            );
+        }
+
+// 成功和明确拒绝，都是已经完成的处理结果。
+// 重复消息正常结束，不再次扣库存。
+// 对应结果由同一事务保存的 Outbox 继续负责投递。
     }
 
 }

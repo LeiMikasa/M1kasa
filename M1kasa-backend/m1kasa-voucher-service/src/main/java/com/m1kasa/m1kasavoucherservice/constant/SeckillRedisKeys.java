@@ -29,4 +29,14 @@ public final class SeckillRedisKeys {
         return "m1kasa:seckill:outbox:{"+voucherId+"}";
     }
 
+    public static String reservation(
+            Long voucherId,
+            String requestId
+    ) {
+        return "m1kasa:seckill:reservation:{"
+                + voucherId
+                + "}:"
+                + requestId;
+    }
+
 }
