@@ -18,6 +18,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 @Service
 public class SeckillOrderWriter {
@@ -47,7 +48,7 @@ public class SeckillOrderWriter {
         //1.保存订单
         VoucherOrder order=new VoucherOrder();
         order.setRequestId(message.requestId());
-        order.setRequestId(message.requestId());
+        order.setOrderNo("MK" + UUID.randomUUID().toString().replace("-", ""));
         order.setUserId(message.userId());
         order.setVoucherId(message.voucherId());
         order.setStatus(OrderStatus.WAITING_STOCK);

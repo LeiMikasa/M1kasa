@@ -39,6 +39,7 @@ public class OrderQueryServiceImpl implements OrderQueryService {
 
         return new OrderSummaryDTO(
                 order.getId().toString(),
+                order.getOrderNo(),
                 order.getVoucherId().toString(),
                 order.getStatus(),
                 order.getCreateTime()
@@ -71,6 +72,7 @@ public class OrderQueryServiceImpl implements OrderQueryService {
                 .stream()
                 .map(order -> new OrderSummaryDTO(
                         order.getId().toString(),
+                        order.getOrderNo(),
                         order.getVoucherId().toString(),
                         order.getStatus(),
                         order.getCreateTime()
@@ -107,6 +109,7 @@ public class OrderQueryServiceImpl implements OrderQueryService {
 
         return new OrderSummaryDTO(
                 order.getId().toString(),
+                order.getOrderNo(),
                 order.getVoucherId().toString(),
                 order.getStatus(),
                 order.getCreateTime()

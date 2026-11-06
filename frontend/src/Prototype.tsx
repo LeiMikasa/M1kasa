@@ -16,7 +16,7 @@ type User = { id: string | number; nickName: string; icon: string | null };
 type ShopType = { id: number; name: string; icon: string | null };
 type Shop = { id: number; name: string; typeId: number; images: string | null; area: string | null; address: string; avgPrice: number | null; score: number | null; comments: number | null; openHours: string | null; distance: number | null };
 type Voucher = { id: number; shopId: number; title: string; subTitle: string | null; rules: string | null; payValue: number; actualValue: number; type: number; status: number; stock: number | null; beginTime: string | null; endTime: string | null };
-type VoucherOrder = { id: string; voucherId: string; status: number; createTime: string };
+type VoucherOrder = { id: string; orderNo?: string | null; voucherId: string; status: number; createTime: string };
 type UploadedImage = { objectKey: string; url: string };
 type ProfileUpdate = { nickName: string; avatarObjectKey: string | null };
 type BlogLike = { likedByMe: boolean; liked: number };
@@ -518,7 +518,7 @@ function SeckillPurchase({ voucher, token, userId, now, identityLoading, identit
   return <section className="seckill-purchase" aria-label="抢券与订单">
     <p className="checkout-note">活动时间以北京时间为准，展示库存仅供参考，实际资格以提交结果为准。</p>
     {token && !userId && <div className="reservation-message" role={identityError ? 'alert' : 'status'}><p>{identityError || (identityLoading ? '正在确认登录身份…' : '正在读取账号信息…')}</p>{identityError && <button className="outline-button" onClick={onIdentityRetry}>重新确认登录身份</button>}</div>}
-    {order ? <div className="live-order-card" data-testid="order-result" role="status"><div className="live-order-heading"><span><CheckIcon /> 订单已创建</span><em>{orderStatus}</em></div><dl><div><dt>订单编号</dt><dd data-testid="order-id">{order.id}</dd></div><div><dt>创建时间</dt><dd>{timeLabel(order.createTime)}</dd></div></dl>{order.status === 1 && <p>支付功能暂未开放，订单当前为待支付状态。</p>}{order.status === 3 && <p>此订单已取消，当前活动按一人一券规则处理。</p>}<button className="outline-button" data-testid="order-status-refresh" disabled={querying || polling} onClick={() => checkOrder(false)}>{querying ? '正在刷新…' : '刷新订单状态'}</button></div> : <>
+    {order ? <div className="live-order-card" data-testid="order-result" role="status"><div className="live-order-heading"><span><CheckIcon /> 订单已创建</span><em>{orderStatus}</em></div><dl><div><dt>订单编号</dt><dd data-testid="order-id">{order.orderNo ?? order.id}</dd></div><div><dt>创建时间</dt><dd>{timeLabel(order.createTime)}</dd></div></dl>{order.status === 1 && <p>支付功能暂未开放，订单当前为待支付状态。</p>}{order.status === 3 && <p>此订单已取消，当前活动按一人一券规则处理。</p>}<button className="outline-button" data-testid="order-status-refresh" disabled={querying || polling} onClick={() => checkOrder(false)}>{querying ? '正在刷新…' : '刷新订单状态'}</button></div> : <>
       {unresolved && <div className="reservation-message" role="status"><strong>{phase === 'accepted' ? '已获得抢券资格，正在确认订单' : '抢券结果待确认'}</strong><p>{phase === 'accepted' ? '订单正在处理，请以查询到的订单结果为准。' : '请求可能已经到达服务端，请先查询订单结果。'}</p></div>}
       {reserveError && <p className="reservation-error" role="alert">{reserveError}</p>}
       <button className="coral-button" data-testid="seckill-submit" disabled={reserveDisabled} onClick={() => void reserve()}>{buttonLabel}</button>

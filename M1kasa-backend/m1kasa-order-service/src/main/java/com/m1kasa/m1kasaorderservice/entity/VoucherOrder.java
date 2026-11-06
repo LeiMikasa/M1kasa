@@ -27,6 +27,15 @@ public class VoucherOrder {
 
     private LocalDateTime updateTime;
 
+    private String orderNo;
+
+    public String getOrderNo() {
+        return orderNo;
+    }
+
+    public void setOrderNo(String orderNo) {
+        this.orderNo = orderNo;
+    }
     public String getFailureCode() {
         return failureCode;
     }
