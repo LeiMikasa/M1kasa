@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.m1kasa.m1kasaorderservice.entity.SeckillStockCompensationOutbox;
 import com.m1kasa.m1kasaorderservice.mapper.SeckillStockCompensationOutboxMapper;
 import com.m1kasa.order.api.message.SeckillOrderClosedMessage;
+import com.xxl.job.core.handler.annotation.XxlJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -41,7 +42,7 @@ public class SeckillStockCompensationOutboxJob {
         this.publisher = publisher;
     }
 
-    @Scheduled(fixedDelay = 2000, initialDelay = 5000)
+    @XxlJob("seckillStockCompensationRetry")
     public void dispatchPending() {
         try {
             if (cycleUpperBound == 0) {

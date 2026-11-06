@@ -7,6 +7,8 @@ import com.m1kasa.m1kasaorderservice.entity.SeckillOrderOutbox;
 import com.m1kasa.m1kasaorderservice.mapper.SeckillOrderOutboxMapper;
 import com.m1kasa.order.api.message.SeckillOrderCreatedMessage;
 import com.m1kasa.voucher.api.message.SeckillOrderCreateMessage;
+import com.xxl.job.core.context.XxlJobHelper;
+import com.xxl.job.core.handler.annotation.XxlJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -14,7 +16,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 
 @Component
@@ -27,68 +31,93 @@ public class SeckillOrderOutboxJob {
 
     private static final Logger log =
             LoggerFactory.getLogger(SeckillOrderOutboxJob.class);
-
+    private static final int BATCH_SIZE = 100;
     private final SeckillOrderOutboxMapper orderOutboxMapper;
-    private final SeckillOrderCreatedPublisher publisher;
-
-    public SeckillOrderOutboxJob(SeckillOrderOutboxMapper orderOutboxMapper, SeckillOrderCreatedPublisher publisher) {
+    private final SeckillOrderOutboxDispatcher dispatcher;
+    private long lastScannedId;   //上次扫到哪里
+    private long cycleUpperBound;  //本轮扫到哪里结束
+    public SeckillOrderOutboxJob(SeckillOrderOutboxMapper orderOutboxMapper, SeckillOrderCreatedPublisher publisher, SeckillOrderOutboxDispatcher dispatcher) {
         this.orderOutboxMapper = orderOutboxMapper;
-        this.publisher = publisher;
+        this.dispatcher = dispatcher;
     }
 
-    //本轮扫描到的位置；扫描到末尾后，从头重试未发送记录
-    private long lastScannedId=0;
-
-    @Scheduled(fixedDelay = 2000,initialDelay = 5000)
+    @XxlJob("seckillOrderOutboxRetry")
     public void dispatchPending(){
-        List<SeckillOrderOutbox> records=orderOutboxMapper.selectList(
+          if (cycleUpperBound==0){
+             //固定这轮遍历的终点，扫到终点后回头重试旧记录
+              SeckillOrderOutbox latest = orderOutboxMapper.selectOne(
+                      new LambdaQueryWrapper<SeckillOrderOutbox>()
+                              .select(SeckillOrderOutbox::getId)
+                              .eq(SeckillOrderOutbox::getStatus, 0)
+                              .orderByDesc(SeckillOrderOutbox::getId)
+                              .last("LIMIT 1")
+              );
+              if (latest==null){
+                  XxlJobHelper.log("当前没有待发的订单 Outbox");
+                  return;
+              }
+              cycleUpperBound=latest.getId();
+          }
+        List<SeckillOrderOutbox> records = orderOutboxMapper.selectList(
                 new LambdaQueryWrapper<SeckillOrderOutbox>()
-                        .eq(SeckillOrderOutbox::getStatus,0)
-                        .gt(SeckillOrderOutbox::getId,lastScannedId)
+                        .eq(SeckillOrderOutbox::getStatus, 0)
+                        .gt(SeckillOrderOutbox::getId, lastScannedId)
+                        .le(SeckillOrderOutbox::getId, cycleUpperBound)
                         .orderByAsc(SeckillOrderOutbox::getId)
-                        .last("LIMIT 100")
+                        .last("LIMIT " + BATCH_SIZE)
         );
         if (records.isEmpty()){
-            lastScannedId=0;
+            resetScan();
+            XxlJobHelper.log("当前扫描段结束，下次从头扫描");
             return;
         }
+        List<CompletableFuture<Boolean>> batch=new ArrayList<>(records.size());
         for (SeckillOrderOutbox record : records) {
-            lastScannedId = record.getId();
-            try {
-                SeckillOrderCreatedMessage message = new SeckillOrderCreatedMessage(
-                        record.getRequestId(),
-                        record.getOrderId(),
-                        record.getVoucherId(),
-                        record.getUserId()
-                );
-                //等待发布确认，失败或超时会抛出异常
-                publisher.send(message).join();
-                //确认成功后，只更新仍然处于待发送状态的记录
-                // 确认成功后，只更新仍然处于待发送状态的记录
-                orderOutboxMapper.update(
-                        null,
-                        new LambdaUpdateWrapper<SeckillOrderOutbox>()
-                                .eq(
-                                        SeckillOrderOutbox::getId,
-                                        record.getId()
-                                )
-                                .eq(SeckillOrderOutbox::getStatus, 0)
-                                .set(SeckillOrderOutbox::getStatus, 1)
-                                .set(
-                                        SeckillOrderOutbox::getUpdateTime,
-                                        LocalDateTime.now()
-                                )
-                );
-            }catch (RuntimeException ex){
-                   //保留待发送状态，后续扫描时继续重试
-                log.warn(
-                        "订单事件投递失败，outboxId={},orderId={}",
-                        record.getId(),
-                        record.getOrderId(),
-                        ex
-                );
+            lastScannedId=record.getId();
+            CompletableFuture<Boolean> attempt = dispatcher.dispatchOne(record)
+                    .handle((unused, error) -> {
+                        if (error != null) {
+                            log.warn(
+                                    "订单事件投递失败，outboxId={}, orderId={}",
+                                    record.getId(),
+                                    record.getOrderId(),
+                                    error
+                            );
+                            return false;
+                        }
+
+                        return true;
+                    });
+            batch.add(attempt);
+        }
+        CompletableFuture.allOf(
+                batch.toArray(new CompletableFuture<?>[0])
+        ).join();
+
+        int failures = 0;
+        for (CompletableFuture<Boolean> attempt : batch) {
+            if (!Boolean.TRUE.equals(attempt.join())) {
+                failures++;
             }
         }
+
+        if (lastScannedId >= cycleUpperBound) {
+            resetScan();
+        }
+
+        XxlJobHelper.log(
+                "订单 Outbox 投递结束，尝试数={}，失败数={}",
+                records.size(),
+                failures
+        );
+
+        if (failures > 0) {
+            XxlJobHelper.handleFail("本批投递失败数=" + failures);
+        }
+    }
+    private void resetScan() {
+        lastScannedId = 0;
+        cycleUpperBound = 0;
     }
 
 }

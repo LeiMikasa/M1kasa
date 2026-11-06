@@ -36,7 +36,6 @@ public class SeckillOutboxJob {
     private final SeckillOutboxDispatcher dispatcher;
 
     public SeckillOutboxJob(
-            SeckillVoucherMapper seckillVoucherMapper,
             StringRedisTemplate stringRedisTemplate,
             SeckillOutboxDispatcher dispatcher
     ) {

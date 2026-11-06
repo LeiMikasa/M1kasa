@@ -6,21 +6,39 @@ import com.m1kasa.m1kasaorderservice.entity.SeckillOrderOutbox;
 import com.m1kasa.m1kasaorderservice.entity.VoucherOrder;
 import com.m1kasa.m1kasaorderservice.mapper.SeckillOrderOutboxMapper;
 import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
+import com.m1kasa.m1kasaorderservice.mq.SeckillOrderOutboxDispatcher;
 import com.m1kasa.order.api.message.SeckillOrderCreatedMessage;
 import com.m1kasa.voucher.api.message.SeckillOrderCreateMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 
 @Service
 public class SeckillOrderWriter {
+    private static final Logger log =
+            LoggerFactory.getLogger(SeckillOrderWriter.class);
+
+    private final SeckillOrderOutboxDispatcher outboxDispatcher;
+    private final boolean outboxEnabled;
     private final VoucherOrderMapper voucherOrderMapper;
     private final SeckillOrderOutboxMapper orderOutboxMapper;
 
-    public SeckillOrderWriter(VoucherOrderMapper voucherOrderMapper, SeckillOrderOutboxMapper orderOutboxMapper) {
+    public SeckillOrderWriter(
+            VoucherOrderMapper voucherOrderMapper,
+            SeckillOrderOutboxMapper orderOutboxMapper,
+            SeckillOrderOutboxDispatcher outboxDispatcher,
+            @Value("${m1kasa.order.outbox.enabled:false}") boolean outboxEnabled
+    ) {
         this.voucherOrderMapper = voucherOrderMapper;
         this.orderOutboxMapper = orderOutboxMapper;
+        this.outboxDispatcher = outboxDispatcher;
+        this.outboxEnabled = outboxEnabled;
     }
 
     @Transactional
@@ -51,8 +69,42 @@ public class SeckillOrderWriter {
         outbox.setCreateTime(now);
         outbox.setUpdateTime(now);
 
-        orderOutboxMapper.insert(outbox);
+        if (orderOutboxMapper.insert(outbox) != 1 || outbox.getId() == null) {
+            throw new IllegalStateException("保存订单 Outbox 失败");
+        }
+
+        if (outboxEnabled) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            dispatchAfterCommit(outbox);
+                        }
+                    }
+            );
+        }
 
         return orderId;
+    }
+    private void dispatchAfterCommit(SeckillOrderOutbox outbox) {
+        try {
+            outboxDispatcher.dispatchOne(outbox)
+                    .whenComplete((unused, error) -> {
+                        if (error != null) {
+                            log.warn(
+                                    "订单事件即时投递失败，outboxId={}, orderId={}",
+                                    outbox.getId(),
+                                    outbox.getOrderId(),
+                                    error
+                            );
+                        }
+                    });
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "订单事件即时投递提交失败，outboxId={}",
+                    outbox.getId(),
+                    ex
+            );
+        }
     }
 }

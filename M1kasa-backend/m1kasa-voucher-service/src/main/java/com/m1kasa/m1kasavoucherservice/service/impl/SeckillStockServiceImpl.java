@@ -7,6 +7,8 @@ import com.m1kasa.m1kasavoucherservice.mapper.SeckillStockDeductionMapper;
 import com.m1kasa.m1kasavoucherservice.service.SeckillStockService;
 import com.m1kasa.m1kasavoucherservice.service.SeckillStockWriter;
 import com.m1kasa.order.api.message.SeckillOrderCreatedMessage;
+import com.m1kasa.voucher.api.SeckillStockDeductRequest;
+import com.m1kasa.voucher.api.SeckillStockDeductResult;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -24,17 +26,58 @@ public class SeckillStockServiceImpl implements SeckillStockService {
 
     @Override
     public void deduct(SeckillOrderCreatedMessage message) {
-        validateMessage(message);
+        if (message == null) {
+            throw new IllegalArgumentException("订单创建事件不能为空");
+        }
+
+        SeckillStockDeductRequest request = new SeckillStockDeductRequest(
+                message.requestId(),
+                message.orderId(),
+                message.voucherId(),
+                message.userId()
+        );
+        validateRequest(request);
         try {
-            seckillStockWriter.deduct(message);
+            seckillStockWriter.deduct(request);
         }catch (DuplicateKeyException ex){
             //内部事务已回滚，再判断是否确实处理过
-            verifyAlreadyProcess(message,ex);
+            verifyAlreadyProcess(request,ex);
         }
     }
 
-    private void validateMessage(
-            SeckillOrderCreatedMessage message
+    @Override
+    public SeckillStockDeductResult deductForRpc(SeckillStockDeductRequest request) {
+        validateRequest(request);
+
+        SeckillStockDeduction record;
+        try {
+            record = seckillStockWriter.deductForRpc(request);
+        } catch (DuplicateKeyException ex) {
+            record = verifyAlreadyProcess(request, ex);
+        }
+
+        if (Integer.valueOf(SeckillStockResultStatus.DEDUCTED)
+                .equals(record.getResultStatus())) {
+            return new SeckillStockDeductResult(
+                    SeckillStockDeductResult.Outcome.DEDUCTED,
+                    null
+            );
+        }
+
+        if (Integer.valueOf(SeckillStockResultStatus.REJECTED)
+                .equals(record.getResultStatus())
+                && StringUtils.hasText(record.getFailureCode())) {
+            return new SeckillStockDeductResult(
+                    SeckillStockDeductResult.Outcome.REJECTED,
+                    record.getFailureCode()
+            );
+        }
+
+        throw new IllegalStateException("库存扣减记录缺少有效结果");
+    }
+
+    private void validateRequest(
+            SeckillStockDeductRequest message
     ) {
         if (message == null
                 || !StringUtils.hasText(message.requestId())
@@ -49,8 +92,8 @@ public class SeckillStockServiceImpl implements SeckillStockService {
         }
     }
     //触发唯一约束之后，检查是不否已有最终结果，成功或明确拒绝，主要是避免二次消费
-    private void verifyAlreadyProcess(
-            SeckillOrderCreatedMessage message,
+    private SeckillStockDeduction verifyAlreadyProcess(
+            SeckillStockDeductRequest message,
             DuplicateKeyException cause
     ){
         //先按订单ID查找已提交的扣减记录
@@ -96,10 +139,7 @@ public class SeckillStockServiceImpl implements SeckillStockService {
                     cause
             );
         }
-
-// 成功和明确拒绝，都是已经完成的处理结果。
-// 重复消息正常结束，不再次扣库存。
-// 对应结果由同一事务保存的 Outbox 继续负责投递。
+        return existing;
     }
 
 }
