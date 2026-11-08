@@ -21,7 +21,7 @@ public class OrderStockConfirmServiceImpl implements OrderStockConfirmService {
     }
 
     @Override
-    public void confirm(SeckillStockDeductedMessage message) {
+    public void confirm(SeckillStockDeductedMessage message,Long payAmountFen) {
           validateMessage(message);
           //根据库存成功事件取得状态转换规则
           OrderStateMachine.Transition transition=
@@ -32,6 +32,7 @@ public class OrderStockConfirmServiceImpl implements OrderStockConfirmService {
                 message.requestId(),
                 message.voucherId(),
                 message.userId(),
+                payAmountFen,
                 transition.sourceStatus(),
                 transition.targetStatus()
         );

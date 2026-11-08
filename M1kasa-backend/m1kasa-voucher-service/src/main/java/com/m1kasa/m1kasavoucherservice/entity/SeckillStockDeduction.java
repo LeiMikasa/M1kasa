@@ -19,6 +19,15 @@ public class SeckillStockDeduction {
     // 明确拒绝时的原因代码，成功时为空
     private String failureCode;
     private LocalDateTime createTime;
+    private Long payAmountFen;
+
+    public Long getPayAmountFen() {
+        return payAmountFen;
+    }
+
+    public void setPayAmountFen(Long payAmountFen) {
+        this.payAmountFen = payAmountFen;
+    }
 
     public String getFailureCode() {
         return failureCode;

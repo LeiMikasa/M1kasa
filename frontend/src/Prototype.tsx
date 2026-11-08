@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, Pencil1Icon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
 import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useMobileDevice } from './mobile';
 import './prototype.css';
@@ -390,6 +390,236 @@ function reservationMarker(key: string | null, value?: ReservationMarker | null,
   } catch { return null; }
 }
 
+type PaymentOrder = { payNo: string; orderId: string; payAmountFen: number; status: number; createTime: string; paidTime: string | null };
+type PaymentReceipt = { payNo: string; channelTradeNo: string; payAmountFen: number; paidTime: string };
+type PaymentPhase = 'idle' | 'creating' | 'ready' | 'submitting' | 'confirming' | 'pending';
+type PaymentMarker = { payNo: string; phase: 'submitted' | 'received'; attemptId: string };
+
+function paymentAttemptId() {
+  return globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+}
+
+// Store unresolved attempts only. A channel receipt is not an order-paid result.
+function paymentMarker(key: string, value?: PaymentMarker | null, expectedAttempt?: string): PaymentMarker | null {
+  try {
+    const text = localStorage.getItem(key);
+    const stored = text ? JSON.parse(text) : null;
+    const valid: PaymentMarker | null = stored && typeof stored.payNo === 'string' && /^[0-9a-f]{32}$/.test(stored.payNo)
+      && (stored.phase === 'submitted' || stored.phase === 'received') && typeof stored.attemptId === 'string' ? stored : null;
+    if (expectedAttempt && valid?.attemptId !== expectedAttempt) return valid;
+    if (value === null) { localStorage.removeItem(key); return null; }
+    if (value) { localStorage.setItem(key, JSON.stringify(value)); return value; }
+    return valid;
+  } catch { return null; }
+}
+
+function OrderPayment({ order, voucher, token, userId, onOrderUpdated }: {
+  order: VoucherOrder; voucher: Voucher; token: string; userId: string;
+  onOrderUpdated: (order: VoucherOrder) => void;
+}) {
+  const keyboard = useKeyboard();
+  const markerKey = 'm1kasa.payment.pending:' + userId + ':' + order.id;
+  const [attempt, setAttempt] = useState<PaymentMarker | null>(() => paymentMarker(markerKey));
+  const [phase, setPhase] = useState<PaymentPhase>(() => paymentMarker(markerKey) ? 'pending' : 'idle');
+  const [payment, setPayment] = useState<PaymentOrder | null>(null);
+  const [receipt, setReceipt] = useState<PaymentReceipt | null>(null);
+  const [open, setOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const mounted = useRef(false);
+  const busy = useRef(false);
+  const latestOrder = useRef(order);
+  latestOrder.current = order;
+  const actionAbort = useRef<AbortController | null>(null);
+  const queryAbort = useRef<AbortController | null>(null);
+  const querySequence = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
+
+  const stopPolling = useCallback(() => {
+    querySequence.current += 1;
+    queryAbort.current?.abort();
+    window.clearTimeout(timer.current);
+  }, []);
+
+  const pollOrder = useCallback(() => {
+    if (!mounted.current || localStorage.getItem(TOKEN_KEY) !== token) return;
+    stopPolling();
+    const controller = new AbortController();
+    queryAbort.current = controller;
+    const sequence = querySequence.current;
+    const startedAt = Date.now();
+    const current = () => mounted.current && !controller.signal.aborted
+      && querySequence.current === sequence && localStorage.getItem(TOKEN_KEY) === token;
+    setChecking(true); setPhase('confirming');
+
+    const read = async (number: number) => {
+      try {
+        const next = await api<VoucherOrder>('/order/' + encodeURIComponent(order.id), { signal: controller.signal });
+        if (!current()) return;
+        if (!next || next.id !== order.id || String(next.voucherId) !== String(voucher.id)
+          || ![0, 1, 2, 3].includes(next.status)) throw new ApiError('订单结果不匹配，请重新查询', 0);
+        setError('');
+        if (next.status === 2 || next.status === 3) {
+          stopPolling(); setChecking(false); setPhase('idle');
+          if (next.status === 2) { paymentMarker(markerKey, null); setAttempt(null); }
+          onOrderUpdated(next);
+          return;
+        }
+      } catch (failure) {
+        if (!current()) return;
+        const message = (failure as Error).message;
+        setError('暂时无法确认最新付款结果：' + message);
+        if (failure instanceof ApiError && (failure.status === 401 || failure.status === 404)) {
+          setChecking(false); setPhase('pending'); return;
+        }
+      }
+      if (!current()) return;
+      if (number < 24 && Date.now() - startedAt < 60000) {
+        timer.current = window.setTimeout(() => { void read(number + 1); }, 2000);
+      } else {
+        setChecking(false); setPhase('pending');
+      }
+    };
+    void read(1);
+  }, [markerKey, onOrderUpdated, order.id, stopPolling, token, voucher.id]);
+
+  useEffect(() => {
+    mounted.current = true;
+    if (order.status === 1 && paymentMarker(markerKey)) pollOrder();
+    return () => { mounted.current = false; actionAbort.current?.abort(); stopPolling(); };
+  }, [markerKey, pollOrder, stopPolling, token]);
+
+  useEffect(() => {
+    if (order.status !== 2 && order.status !== 3) return;
+    stopPolling(); actionAbort.current?.abort(); busy.current = false;
+    setChecking(false); setPhase('idle');
+    if (order.status === 2) { paymentMarker(markerKey, null); setAttempt(null); setError(''); }
+  }, [markerKey, order.status, stopPolling]);
+
+  async function preparePayment() {
+    keyboard.hide(); setOpen(true);
+    if (busy.current || latestOrder.current.status !== 1 || localStorage.getItem(TOKEN_KEY) !== token) return;
+    busy.current = true;
+    stopPolling(); setChecking(false); setPhase('creating'); setError(''); setPayment(null);
+    const controller = new AbortController();
+    actionAbort.current = controller;
+    const current = () => mounted.current && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    try {
+      const result = await api<PaymentOrder>('/pay/orders', {
+        method: 'POST', body: JSON.stringify({ orderId: order.id }), signal: controller.signal
+      });
+      if (!current()) return;
+      if (!result || result.orderId !== order.id || !/^[0-9a-f]{32}$/.test(result.payNo)
+        || !Number.isSafeInteger(result.payAmountFen) || result.payAmountFen <= 0 || ![0, 1].includes(result.status)) {
+        throw new ApiError('支付单信息不完整，请重新获取', 0);
+      }
+      setPayment(result);
+      const previous = paymentMarker(markerKey);
+      if (previous && previous.payNo !== result.payNo) {
+        setPhase('pending'); setError('支付单信息已变化，请先核对原付款结果'); return;
+      }
+      if (result.status === 1 || previous?.phase === 'received') {
+        const marker: PaymentMarker = { payNo: result.payNo, phase: 'received',
+          attemptId: previous?.attemptId || paymentAttemptId() };
+        paymentMarker(markerKey, marker); setAttempt(marker); pollOrder();
+      } else {
+        setAttempt(previous); setPhase('ready');
+      }
+    } catch (failure) {
+      if (!current()) return;
+      setError((failure as Error).message); setPhase(paymentMarker(markerKey) ? 'pending' : 'idle');
+    } finally { busy.current = false; }
+  }
+
+  async function confirmPayment() {
+    if (!payment || payment.status !== 0 || phase !== 'ready' || busy.current
+      || latestOrder.current.status !== 1 || localStorage.getItem(TOKEN_KEY) !== token) return;
+    busy.current = true;
+    const controller = new AbortController();
+    actionAbort.current = controller;
+    const current = () => mounted.current && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const marker: PaymentMarker = { payNo: payment.payNo, phase: 'submitted', attemptId: paymentAttemptId() };
+    // Persist before POST: navigation or a timeout cannot prove that the channel did not receive it.
+    paymentMarker(markerKey, marker); setAttempt(marker); setPhase('submitting'); setError('');
+    try {
+      const result = await api<PaymentReceipt>('/pay/mock/orders/' + encodeURIComponent(payment.payNo) + '/confirm', {
+        method: 'POST', signal: controller.signal
+      });
+      if (!result || result.payNo !== payment.payNo || result.payAmountFen !== payment.payAmountFen
+        || typeof result.channelTradeNo !== 'string' || !result.channelTradeNo || !result.paidTime) {
+        throw new ApiError('付款凭证暂时无法核实，请先查询结果', 0);
+      }
+      const saved = paymentMarker(markerKey, { ...marker, phase: 'received' }, marker.attemptId);
+      if (!current()) return;
+      setAttempt(saved); setReceipt(result); pollOrder();
+    } catch (failure) {
+      const rejected = failure instanceof ApiError && failure.status >= 400 && failure.status < 500
+        && failure.status !== 408 && failure.status !== 429;
+      const saved = rejected ? paymentMarker(markerKey, null, marker.attemptId) : paymentMarker(markerKey);
+      if (!current()) return;
+      setAttempt(saved);
+      if (rejected && !saved) {
+        setPhase('ready');
+        setError(failure instanceof ApiError && failure.status === 404
+          ? '当前模拟付款暂不可用，请稍后重试' : (failure as Error).message);
+      } else {
+        setError('本次付款结果暂未确认，正在查询，请勿重复发起新付款。');
+        pollOrder();
+      }
+    } finally { busy.current = false; }
+  }
+
+  const paid = order.status === 2;
+  const cancelled = order.status === 3;
+  const working = phase === 'creating' || phase === 'submitting';
+  const awaiting = Boolean(attempt) || phase === 'confirming' || phase === 'pending';
+  const amount = payment?.payAmountFen ?? receipt?.payAmountFen;
+  const close = () => { keyboard.hide(); setOpen(false); };
+
+  if (order.status === 0) return <p className="payment-stock-note">库存正在确认，确认后即可付款。</p>;
+
+  return <div className="order-payment" data-testid="order-payment">
+    {paid ? <div className="payment-success-inline" data-testid="payment-success" role="status"><CheckIcon /><span><strong>付款成功</strong><small>订单已确认支付，优惠券已购入。</small></span></div>
+      : cancelled ? <p className="payment-stock-note">{attempt ? '订单已取消，请核对这笔付款结果并保留支付单号。' : '订单已取消，无法继续付款。'}</p>
+      : <><p className="payment-order-note" role="status">{phase === 'submitting' ? '正在提交模拟付款…' : awaiting
+        ? attempt?.phase === 'received' ? '已收到收款凭证，正在确认订单支付结果。' : '付款结果待确认，请先查询原付款进度。'
+        : '订单已准备好，付款后即可完成购买。'}</p>
+        <button type="button" className="coral-button payment-open" data-testid="payment-open" disabled={working} onClick={() => void preparePayment()}>{phase === 'creating' ? '正在获取支付单…' : phase === 'submitting' ? '正在提交付款…' : awaiting ? '查看付款进度' : '去付款'}<ChevronRightIcon /></button>
+        {error && !open && <p className="payment-error" role="alert">{error}</p>}
+      </>}
+    <BottomSheet open={open} onOpenChange={setOpen} title={paid ? '支付完成' : awaiting ? '付款结果' : '确认付款'}
+      description="本地模拟支付，不会产生真实扣款。" snap={0.76}>
+      <div className="payment-sheet" data-testid="payment-sheet">
+        <div className="payment-amount" data-testid="payment-amount"><span>{paid ? '已支付金额' : '实付金额'}</span>
+          {amount !== undefined ? <strong><small>¥</small>{money(amount)}</strong> : <strong className="payment-amount-loading">{phase === 'creating' ? '正在获取金额…' : '待确认'}</strong>}
+        </div>
+        <dl className="payment-details"><div><dt>购买内容</dt><dd>{voucher.title}</dd></div><div><dt>订单编号</dt><dd>{order.orderNo ?? order.id}</dd></div><div><dt>支付方式</dt><dd><span className="payment-method-mark">模</span>模拟支付</dd></div>
+          {(payment?.payNo || attempt?.payNo) && <div><dt>支付单号</dt><dd className="payment-reference">{payment?.payNo || attempt?.payNo}</dd></div>}
+        </dl>
+        {paid ? <div className="payment-result is-paid" role="status"><CheckIcon /><strong>付款成功</strong><p>订单已更新为已支付。</p></div>
+          : cancelled ? <div className="payment-result" role="status"><strong>订单已取消</strong><p>{attempt ? '请保留支付单号，核对这笔付款的处理结果。' : '本订单无法继续付款。'}</p></div>
+          : phase === 'creating' ? <div className="payment-result" role="status"><i className="payment-spinner" aria-hidden="true" /><p>正在获取最新支付单和金额</p></div>
+          : (phase === 'submitting' || phase === 'confirming' || phase === 'pending') ? <div className="payment-result" data-testid="payment-pending" role="status">
+            {(phase === 'submitting' || checking) && <i className="payment-spinner" aria-hidden="true" />}
+            <strong>{phase === 'submitting' ? '正在提交付款' : checking ? '正在确认付款结果' : '付款结果仍待确认'}</strong>
+            <p>{attempt?.phase === 'received' ? '模拟渠道已收款，订单结果正在同步。' : '付款可能已被受理，请先确认原付款结果。'}{!checking && phase === 'pending' ? '稍后可以再次查询。' : ''}</p>
+          </div> : null}
+        {error && <p className="payment-error" role="alert">{error}</p>}
+        <div className="payment-actions">
+          {paid || cancelled ? <button type="button" className="coral-button" onClick={close}>完成</button>
+            : phase === 'ready' && payment ? <button type="button" className="coral-button" data-testid="payment-confirm" onClick={() => void confirmPayment()}>{attempt?.phase === 'submitted' ? '重试原模拟付款' : '确认模拟付款'} · ¥{money(payment.payAmountFen)}</button>
+            : phase === 'creating' || phase === 'submitting' ? <button type="button" className="coral-button" disabled>{phase === 'creating' ? '正在获取支付单…' : '正在提交付款…'}</button>
+            : awaiting ? <><button type="button" className="coral-button" data-testid="payment-check" disabled={checking} onClick={pollOrder}>{checking ? '正在查询支付结果…' : '重新查询支付结果'}</button>
+              {attempt?.phase === 'submitted' && !checking && <button type="button" className="outline-button" onClick={() => void preparePayment()}>继续原付款</button>}</>
+            : <button type="button" className="coral-button" onClick={() => void preparePayment()}>重新获取支付单</button>}
+          {!paid && !cancelled && <button type="button" className="payment-close" onClick={close}>{awaiting ? '稍后查看' : '暂不付款'}</button>}
+        </div>
+      </div>
+    </BottomSheet>
+  </div>;
+}
+
+
 function SeckillPurchase({ voucher, token, userId, now, identityLoading, identityError, onLogin, onIdentityRetry }: {
   voucher: Voucher; token: string; userId: string | null; now: number;
   identityLoading: boolean; identityError: string; onLogin: () => void; onIdentityRetry: () => void;
@@ -432,12 +662,13 @@ function SeckillPurchase({ voucher, token, userId, now, identityLoading, identit
         setLookupError('');
         if (result !== null) {
           if (!result || typeof result.id !== 'string' || !result.id || String(result.voucherId) !== String(voucher.id)) throw new Error('订单响应与当前优惠券不一致，请稍后重新查询');
-          setChecked(true); setOrder(result); setPhase('ordered'); setPolling(false);
+          setChecked(true); setOrder(result); setPhase('ordered');
           reservationMarker(markerKey, null);
-          return;
+          if (result.status !== 0 || !follow) { setPolling(false); return; }
+        } else {
+          setChecked(true);
+          setLookupNote(follow ? '暂未查到订单，正在继续确认。' : '暂未查到订单；如果刚刚提交，请稍后刷新确认。');
         }
-        setChecked(true);
-        setLookupNote(follow ? '暂未查到订单，正在继续确认。' : '暂未查到订单；如果刚刚提交，请稍后刷新确认。');
       } catch (error) {
         if (!current()) return;
         setLookupError((error as Error).message);
@@ -507,18 +738,31 @@ function SeckillPurchase({ voucher, token, userId, now, identityLoading, identit
     }
   }
 
+  const acceptPaymentOrder = useCallback((next: VoucherOrder) => {
+    if (String(next.voucherId) !== String(voucher.id)) return;
+    lookupRun.current += 1; lookupAbort.current?.abort();
+    window.clearTimeout(pollTimer.current);
+    setQuerying(false); setPolling(false);
+    setOrder(previous => previous?.id === next.id ? next : previous);
+  }, [voucher.id]);
+
   if (voucher.type !== 1) return <p className="checkout-note">普通优惠券购买暂未开放，当前可查看优惠信息。</p>;
 
   const state = voucherState(voucher, now);
   const unresolved = phase === 'accepted' || phase === 'uncertain';
-  const orderStatus = order ? ({ 1: '待支付', 2: '已支付', 3: '已取消' } as Record<number, string>)[order.status] || '状态待确认' : '';
+  const orderStatus = order ? ({ 0: '确认库存中', 1: '待支付', 2: '已支付', 3: '已取消' } as Record<number, string>)[order.status] || '状态待确认' : '';
   const reserveDisabled = Boolean(order) || phase !== 'ready' || state !== '进行中' || soldOut || Boolean(token && (!userId || !checked));
   const buttonLabel = order ? '已生成订单' : phase === 'submitting' ? '正在提交…' : unresolved ? '请先确认订单状态' : soldOut ? '优惠券已抢完' : state !== '进行中' ? state : token ? '立即抢券' : '登录后抢券';
 
   return <section className="seckill-purchase" aria-label="抢券与订单">
     <p className="checkout-note">活动时间以北京时间为准，展示库存仅供参考，实际资格以提交结果为准。</p>
     {token && !userId && <div className="reservation-message" role={identityError ? 'alert' : 'status'}><p>{identityError || (identityLoading ? '正在确认登录身份…' : '正在读取账号信息…')}</p>{identityError && <button className="outline-button" onClick={onIdentityRetry}>重新确认登录身份</button>}</div>}
-    {order ? <div className="live-order-card" data-testid="order-result" role="status"><div className="live-order-heading"><span><CheckIcon /> 订单已创建</span><em>{orderStatus}</em></div><dl><div><dt>订单编号</dt><dd data-testid="order-id">{order.orderNo ?? order.id}</dd></div><div><dt>创建时间</dt><dd>{timeLabel(order.createTime)}</dd></div></dl>{order.status === 1 && <p>支付功能暂未开放，订单当前为待支付状态。</p>}{order.status === 3 && <p>此订单已取消，当前活动按一人一券规则处理。</p>}<button className="outline-button" data-testid="order-status-refresh" disabled={querying || polling} onClick={() => checkOrder(false)}>{querying ? '正在刷新…' : '刷新订单状态'}</button></div> : <>
+    {order ? <div className="live-order-card" data-testid="order-result">
+      <div className="live-order-heading"><span><CheckIcon />{order.status === 2 ? '订单已支付' : '订单已创建'}</span><em>{orderStatus}</em></div>
+      <dl><div><dt>订单编号</dt><dd data-testid="order-id">{order.orderNo ?? order.id}</dd></div><div><dt>创建时间</dt><dd>{timeLabel(order.createTime)}</dd></div></dl>
+      {userId && <OrderPayment key={order.id} order={order} voucher={voucher} token={token} userId={userId} onOrderUpdated={acceptPaymentOrder} />}
+      <button className="outline-button" data-testid="order-status-refresh" disabled={querying || polling} onClick={() => checkOrder(false)}>{querying ? '正在刷新…' : '刷新订单状态'}</button>
+    </div> : <>
       {unresolved && <div className="reservation-message" role="status"><strong>{phase === 'accepted' ? '已获得抢券资格，正在确认订单' : '抢券结果待确认'}</strong><p>{phase === 'accepted' ? '订单正在处理，请以查询到的订单结果为准。' : '请求可能已经到达服务端，请先查询订单结果。'}</p></div>}
       {reserveError && <p className="reservation-error" role="alert">{reserveError}</p>}
       <button className="coral-button" data-testid="seckill-submit" disabled={reserveDisabled} onClick={() => void reserve()}>{buttonLabel}</button>
@@ -847,19 +1091,73 @@ function PublishedStory({ blogId, token, viewerId, identityLoading, identityErro
   </>;
 }
 
-function FeedCover({ source, title }: { source: string | null; title: string }) {
+function NoteCover({ source }: { source: string | null }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => { setFailed(false); }, [source]);
-  const readable = Boolean(source && (/^https?:\/\//i.test(source) || source.startsWith('/assets/')));
+  const readable = source && (/^https?:\/\//i.test(source) || source.startsWith('/assets/'));
   return readable && !failed
-    ? <img className="story-photo" src={source!} alt={title} loading="lazy" decoding="async" onError={() => setFailed(true)} />
-    : <span className="story-photo feed-cover-empty"><CameraIcon aria-hidden="true" /><span>封面暂不可用</span></span>;
+    ? <img className="note-cover" src={source} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    : <span className="note-cover note-cover-empty"><CameraIcon aria-hidden="true" /><span>封面暂不可用</span></span>;
 }
 
 function FeedAvatar({ source }: { source: string | null }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => { setFailed(false); }, [source]);
   return <span className="live-author-avatar">{source && !failed ? <img src={source} alt="" loading="lazy" onError={() => setFailed(true)} /> : <PersonIcon aria-hidden="true" />}</span>;
+}
+
+function NoteMasonry<T extends BlogSummary>({ notes, onOpenNote, renderAuthor, cardTestId, linkTestId }: {
+  notes: T[];
+  onOpenNote: (id: string) => void;
+  renderAuthor?: (note: T) => ReactNode;
+  cardTestId?: string;
+  linkTestId?: string;
+}) {
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+
+    const style = getComputedStyle(grid);
+    const rowHeight = parseFloat(style.gridAutoRows);
+    const gap = parseFloat(style.columnGap);
+    const fit = (card: HTMLElement) => {
+      // offsetHeight measures the card before the phone preview scales it.
+      card.style.gridRowEnd = 'span ' + Math.ceil((card.offsetHeight + gap) / rowHeight);
+    };
+
+    const observer = new ResizeObserver(entries => {
+      entries.forEach(entry => fit(entry.target as HTMLElement));
+    });
+    for (const card of grid.children) {
+      if (card instanceof HTMLElement) {
+        fit(card);
+        observer.observe(card);
+      }
+    }
+
+    return () => observer.disconnect();
+  }, [notes]);
+
+  return <div className="note-masonry" ref={gridRef}>
+    {notes.map(note => <article className="note-card" key={note.id} data-testid={cardTestId}>
+      <button type="button" className="note-card-open" data-testid={linkTestId} onClick={() => onOpenNote(note.id)} aria-label={'查看笔记：' + note.title}>
+        <NoteCover source={note.coverImage} />
+        <strong className="note-card-title">{note.title}</strong>
+      </button>
+      <div className="note-card-meta">
+        {renderAuthor?.(note)}
+        <div className="note-card-info">
+          {note.createTime && <time dateTime={note.createTime}>{timeLabel(note.createTime)}</time>}
+          <div className="note-card-stats">
+            <span aria-label={(note.liked ?? 0) + ' 次赞'}><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span>
+            <span aria-label={(note.comments ?? 0) + ' 条评论'}><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span>
+          </div>
+        </div>
+      </div>
+    </article>)}
+  </div>;
 }
 
 function validBlogFeedPage(value: unknown, current: number): value is BlogFeedPage {
@@ -895,24 +1193,19 @@ function BlogFeed({ current, refreshKey, onPageChange, onOpenNote, onNew, onOpen
     <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
     {page && !result.loading && !error && !outOfRange && <>
       {page.records.length === 0 ? <div className="empty-state"><CameraIcon /><h2>第一个好地方，等你来记录</h2><p>暂时还没有笔记，分享你最近的一次发现吧。</p><button className="primary-button" onClick={onNew}>写一篇笔记</button></div> : <>
-        {page.records.map(note => <article className="story-card live-feed-card" key={note.id} data-testid="feed-note">
-          <button className="story-photo-button" onClick={() => onOpenNote(note.id)} aria-label={`查看笔记：${note.title}`}><FeedCover source={note.coverImage} title={note.title} /><span className="photo-counter">读一篇故事 <ChevronRightIcon aria-hidden="true" /></span></button>
-          <button type="button" className="author-row feed-author-link" aria-label={"查看" + (note.authorName || "作者") + "的主页"} disabled={!note.userId} onClick={() => note.userId && onOpenUser(note.userId)}><FeedAvatar source={note.authorIcon} /><span className="author-meta"><strong>{note.authorName || '未知用户'}</strong><span>{note.createTime ? `${timeLabel(note.createTime)} 发布` : '分享身边的好地方'}</span></span></button>
-          <div className="story-content"><button className="story-text-button" onClick={() => onOpenNote(note.id)}><h2>{note.title}</h2></button><div className="feed-card-footer"><div className="feed-card-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></div><button type="button" className="text-button" onClick={() => onOpenNote(note.id)}>阅读全文 <ChevronRightIcon aria-hidden="true" /></button></div></div>
-        </article>)}
+        <NoteMasonry
+          notes={page.records}
+          onOpenNote={onOpenNote}
+          cardTestId="feed-note"
+          renderAuthor={note => <button type="button" className="note-card-author" aria-label={'查看' + (note.authorName || '作者') + '的主页'} disabled={!note.userId} onClick={() => note.userId && onOpenUser(note.userId)}>
+            <FeedAvatar source={note.authorIcon} />
+            <span>{note.authorName || '未知用户'}</span>
+          </button>}
+        />
         <nav className="pagination feed-pagination" aria-label="笔记广场分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
       </>}
     </>}
   </section>;
-}
-
-function NoteThumbnail({ source }: { source: string | null }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { setFailed(false); }, [source]);
-  const readable = Boolean(source && (/^https?:\/\//i.test(source) || source.startsWith('/assets/')));
-  return readable && !failed
-    ? <img className="my-note-cover" src={source!} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
-    : <span className="my-note-cover my-note-cover-empty" aria-label="封面暂不可用"><CameraIcon /></span>;
 }
 
 function MyNotes({ token, current, refreshKey, onPageChange, onLogin, onNew, onOpenNote }: {
@@ -940,13 +1233,7 @@ function MyNotes({ token, current, refreshKey, onPageChange, onLogin, onNew, onO
     <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
     {page && !result.loading && !error && !outOfRange && <>
       {page.total === 0 ? <div className="empty-state my-notes-empty"><CameraIcon /><h2>把第一个好地方记下来</h2><p>还没有发布笔记，先从一张照片开始吧。</p><button className="primary-button" onClick={onNew}>写第一篇笔记</button></div> : <>
-        <div className="my-notes-list">
-          {page.records.map(note => <button className="my-note-card" key={note.id} onClick={() => onOpenNote(note.id)} aria-label={`查看笔记：${note.title}`}>
-            <NoteThumbnail source={note.coverImage} />
-            <span className="my-note-copy"><strong>{note.title}</strong><small>{timeLabel(note.createTime)} 发布</small><span className="my-note-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></span></span>
-            <ChevronRightIcon className="my-note-arrow" aria-hidden="true" />
-          </button>)}
-        </div>
+        <NoteMasonry notes={page.records} onOpenNote={onOpenNote} />
         <div className="pagination my-notes-pagination"><button disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></div>
       </>}
     </>}
@@ -1078,9 +1365,7 @@ function AuthorNotes({ userId, token, current, refreshKey, isSelf, onPageChange,
     {page && !result.loading && !error && !outOfRange && <>
       {page.total === 0 ? <div className="empty-state user-home-empty"><CameraIcon /><h2>{isSelf ? '记录你的第一个好地方' : '还没有公开笔记'}</h2><p>{isSelf ? '把值得分享的发现，留在这里。' : '下次再来，看看新的发现。'}</p>{isSelf && <button type="button" className="primary-button" onClick={onNew}>写一篇笔记</button>}</div> : <>
         {page.records.length === 0 && <div className="request-state"><p>笔记列表已变化，请刷新后查看。</p><button type="button" className="outline-button" onClick={result.reload}>重新加载</button></div>}
-        <div className="user-home-notes-list">{page.records.map(note => <button type="button" className="my-note-card" data-testid="user-home-note" key={note.id} onClick={() => onOpenNote(note.id)} aria-label={'查看笔记：' + note.title}>
-          <NoteThumbnail source={note.coverImage} /><span className="my-note-copy"><strong>{note.title}</strong><small>{timeLabel(note.createTime)} 发布</small><span className="my-note-stats"><span><HeartIcon aria-hidden="true" />{note.liked ?? 0}</span><span><ChatBubbleIcon aria-hidden="true" />{note.comments ?? 0}</span></span></span><ChevronRightIcon className="my-note-arrow" aria-hidden="true" />
-        </button>)}</div>
+        <NoteMasonry notes={page.records} onOpenNote={onOpenNote} linkTestId="user-home-note" />
         <nav className="pagination" aria-label="用户笔记分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
       </>}
     </>}

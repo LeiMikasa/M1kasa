@@ -58,18 +58,22 @@ public class SeckillStockServiceImpl implements SeckillStockService {
 
         if (Integer.valueOf(SeckillStockResultStatus.DEDUCTED)
                 .equals(record.getResultStatus())) {
+            // 扣减成功
             return new SeckillStockDeductResult(
                     SeckillStockDeductResult.Outcome.DEDUCTED,
-                    null
+                    null,
+                    record.getPayAmountFen()
             );
         }
 
         if (Integer.valueOf(SeckillStockResultStatus.REJECTED)
                 .equals(record.getResultStatus())
                 && StringUtils.hasText(record.getFailureCode())) {
+            // 明确拒绝
             return new SeckillStockDeductResult(
                     SeckillStockDeductResult.Outcome.REJECTED,
-                    record.getFailureCode()
+                    record.getFailureCode(),
+                    null
             );
         }
 

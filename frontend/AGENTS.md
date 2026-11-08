@@ -77,3 +77,10 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 - Hide static image-format/size and nickname-length guidance, and omit account ID from the Edit Profile screen.
 - Public user pages show avatar, nickname, follow/follower counts and paginated published notes, with follow actions gated by login. Preserve the existing avatar-to-edit entry and provide a separate My Profile entry.
 - Notes support 1–9 ordered photos: the first is the cover; publishing waits for every selected upload to succeed. Detail galleries use Carousel and retain compatibility with legacy single-cover responses.
+- The public feed, My Notes and public-profile notes share a two-column masonry layout with variable-height covers and direct note navigation.
+
+## Payment flow decisions
+
+- Pending voucher orders open a phone-scoped payment sheet. The payable amount comes from the backend payment order; voucher list prices do not authorize payment amounts.
+- Mock payment receipts indicate channel acceptance only. Display payment success after the owned order endpoint reports status 2, and poll for at most one bounded session before offering a manual status refresh.
+- Keep unresolved payment attempts scoped to user and order across navigation/reloads. Reuse the original server payment number for an explicit retry; never automatically repeat a payment confirmation after a timeout. Cancel stale requests/polling on unmount or identity changes.

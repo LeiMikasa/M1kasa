@@ -52,12 +52,22 @@ public class OrderStockResultService {
         }
 
         switch (result.outcome()) {
-            case DEDUCTED -> confirmService.confirm(new SeckillStockDeductedMessage(
-                    task.getRequestId(),
-                    task.getOrderId(),
-                    task.getVoucherId(),
-                    task.getUserId()
-            ));
+            case DEDUCTED -> {
+                Long amountFen = result.payAmountFen();
+                if (amountFen == null || amountFen <= 0) {
+                    throw new IllegalStateException("库存扣减成功，但缺少有效的应付金额");
+                }
+
+                confirmService.confirm(
+                        new SeckillStockDeductedMessage(
+                                task.getRequestId(),
+                                task.getOrderId(),
+                                task.getVoucherId(),
+                                task.getUserId()
+                        ),
+                        amountFen
+                );
+            }
             case REJECTED -> rejectService.reject(new SeckillStockRejectedMessage(
                     task.getRequestId(),
                     task.getOrderId(),

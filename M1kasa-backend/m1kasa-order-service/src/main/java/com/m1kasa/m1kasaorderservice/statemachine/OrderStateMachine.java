@@ -23,6 +23,10 @@ public class OrderStateMachine {
               OrderStatus.WAITING_STOCK,
               OrderStatus.CANCELLED
             );
+            case PAYMENT_SUCCEEDED -> new Transition(
+                    OrderStatus.WAITING_PAYMENT,
+                    OrderStatus.PAID
+            );
         };
     }
 

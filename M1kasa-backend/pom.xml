@@ -27,6 +27,8 @@
         <module>m1kasa-content-service</module>
         <module>m1kasa-common-storage</module>
         <module>m1kasa-common-auth</module>
+        <module>m1kasa-pay-service</module>
+        <module>m1kasa-pay-api</module>
     </modules>
 
     <properties>

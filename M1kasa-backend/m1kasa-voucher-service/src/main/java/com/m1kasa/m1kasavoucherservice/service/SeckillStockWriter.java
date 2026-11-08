@@ -3,9 +3,11 @@ package com.m1kasa.m1kasavoucherservice.service;
 import com.m1kasa.m1kasavoucherservice.constant.SeckillStockResultStatus;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillStockDeduction;
 import com.m1kasa.m1kasavoucherservice.entity.SeckillStockOutbox;
+import com.m1kasa.m1kasavoucherservice.entity.Voucher;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillStockDeductionMapper;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillStockOutboxMapper;
 import com.m1kasa.m1kasavoucherservice.mapper.SeckillVoucherMapper;
+import com.m1kasa.m1kasavoucherservice.mapper.VoucherMapper;
 import com.m1kasa.order.api.message.SeckillOrderCreatedMessage;
 import com.m1kasa.voucher.api.SeckillStockDeductRequest;
 import org.springframework.stereotype.Service;
@@ -19,11 +21,12 @@ public class SeckillStockWriter {
     private final SeckillStockDeductionMapper deductionMapper;
     private final SeckillVoucherMapper seckillVoucherMapper;
     private final SeckillStockOutboxMapper outboxMapper;
-
-    public SeckillStockWriter(SeckillStockDeductionMapper deductionMapper, SeckillVoucherMapper seckillVoucherMapper, SeckillStockOutboxMapper outboxMapper) {
+    private final VoucherMapper voucherMapper;
+    public SeckillStockWriter(SeckillStockDeductionMapper deductionMapper, SeckillVoucherMapper seckillVoucherMapper, SeckillStockOutboxMapper outboxMapper, VoucherMapper voucherMapper) {
         this.deductionMapper = deductionMapper;
         this.seckillVoucherMapper = seckillVoucherMapper;
         this.outboxMapper = outboxMapper;
+        this.voucherMapper = voucherMapper;
     }
     // 原来的 MQ 消费者仍然走这个方法
     @Transactional
@@ -72,6 +75,14 @@ public class SeckillStockWriter {
         int affected = seckillVoucherMapper.deductStock(request.voucherId());
 
         if (affected == 1) {
+            Voucher voucher = voucherMapper.selectById(request.voucherId());
+            Long payAmountFen = voucher == null ? null : voucher.getPayValue();
+
+            if (payAmountFen == null || payAmountFen <= 0) {
+                throw new IllegalStateException("优惠券应付金额不合法");
+            }
+
+            record.setPayAmountFen(payAmountFen);
             record.setResultStatus(SeckillStockResultStatus.DEDUCTED);
         } else if (affected == 0) {
             record.setResultStatus(SeckillStockResultStatus.REJECTED);

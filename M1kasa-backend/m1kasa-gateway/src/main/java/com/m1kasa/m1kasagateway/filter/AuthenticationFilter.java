@@ -108,7 +108,8 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
     private boolean isPublicRequest(HttpMethod method, String path) {
         if (HttpMethod.POST.equals(method)) {
             return "/user/code".equals(path)
-                    || "/user/login".equals(path);
+                    || "/user/login".equals(path)
+                    || "/pay/callbacks/mock".equals(path);
         }
 
         if (HttpMethod.GET.equals(method)) {

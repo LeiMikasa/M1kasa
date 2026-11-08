@@ -7,6 +7,7 @@ import com.m1kasa.m1kasaorderservice.mapper.VoucherOrderMapper;
 import com.m1kasa.m1kasaorderservice.service.OrderQueryService;
 
 import com.m1kasa.order.api.OrderPageDTO;
+import com.m1kasa.order.api.OrderPaymentInfoDTO;
 import com.m1kasa.order.api.OrderSummaryDTO;
 import org.springframework.stereotype.Service;
 
@@ -113,6 +114,34 @@ public class OrderQueryServiceImpl implements OrderQueryService {
                 order.getVoucherId().toString(),
                 order.getStatus(),
                 order.getCreateTime()
+        );
+    }
+
+    @Override
+    public OrderPaymentInfoDTO findPaymentInfo(Long orderId, Long userId) {
+        VoucherOrder order = findOwnedOrder(orderId, userId);
+        if (order==null){
+            return null;
+        }
+        return new OrderPaymentInfoDTO(
+                order.getId(),
+                order.getUserId(),
+                order.getPayAmountFen(),
+                order.getStatus()
+        );
+    }
+
+    private VoucherOrder findOwnedOrder(Long orderId,Long userId){
+        if (orderId==null || orderId<=0){
+            throw new IllegalArgumentException("订单不合法");
+        }
+        if (userId==null || userId<=0){
+            throw new IllegalArgumentException("用户ID不合法");
+        }
+        return voucherOrderMapper.selectOne(
+                new LambdaQueryWrapper<VoucherOrder>()
+                        .eq(VoucherOrder::getId,orderId)
+                        .eq(VoucherOrder::getUserId,userId)
         );
     }
 }

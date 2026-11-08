@@ -29,6 +29,56 @@ public class VoucherOrder {
 
     private String orderNo;
 
+    private Long payAmountFen;
+
+    private String payNo;
+
+    private String payChannel;
+
+    private String channelTradeNo;
+
+    private LocalDateTime paidTime;
+
+    public String getPayNo() {
+        return payNo;
+    }
+
+    public void setPayNo(String payNo) {
+        this.payNo = payNo;
+    }
+
+    public String getPayChannel() {
+        return payChannel;
+    }
+
+    public void setPayChannel(String payChannel) {
+        this.payChannel = payChannel;
+    }
+
+    public String getChannelTradeNo() {
+        return channelTradeNo;
+    }
+
+    public void setChannelTradeNo(String channelTradeNo) {
+        this.channelTradeNo = channelTradeNo;
+    }
+
+    public LocalDateTime getPaidTime() {
+        return paidTime;
+    }
+
+    public void setPaidTime(LocalDateTime paidTime) {
+        this.paidTime = paidTime;
+    }
+
+    public Long getPayAmountFen() {
+        return payAmountFen;
+    }
+
+    public void setPayAmountFen(Long payAmountFen) {
+        this.payAmountFen = payAmountFen;
+    }
+
     public String getOrderNo() {
         return orderNo;
     }

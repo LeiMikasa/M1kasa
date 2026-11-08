@@ -2,6 +2,7 @@ package com.m1kasa.m1kasaorderservice.service;
 
 
 import com.m1kasa.order.api.OrderPageDTO;
+import com.m1kasa.order.api.OrderPaymentInfoDTO;
 import com.m1kasa.order.api.OrderSummaryDTO;
 
 public interface OrderQueryService {
@@ -11,4 +12,6 @@ public interface OrderQueryService {
     OrderPageDTO findMyOrders(Long userId,int current,int size);
 
     OrderSummaryDTO findById(Long orderId,Long userId);
+
+    OrderPaymentInfoDTO findPaymentInfo(Long orderId, Long userId);
 }

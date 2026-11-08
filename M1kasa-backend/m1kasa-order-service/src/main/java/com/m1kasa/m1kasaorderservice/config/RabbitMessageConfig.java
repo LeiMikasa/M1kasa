@@ -1,6 +1,7 @@
 package com.m1kasa.m1kasaorderservice.config;
 
 
+import com.m1kasa.pay.api.constant.PaymentMqConstants;
 import org.springframework.amqp.core.*;
 import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
@@ -83,6 +84,28 @@ public class RabbitMessageConfig {
                 .bind(queue)
                 .to(exchange)
                 .with("seckill.stock.reject.failed");
+
+        return new Declarables(exchange, queue, binding);
+    }
+    @Bean
+    public Declarables paymentSuccessDeadLetterDeclarables() {
+        DirectExchange exchange = new DirectExchange(
+                PaymentMqConstants.DEAD_LETTER_EXCHANGE,
+                true,
+                false
+        );
+
+        Queue queue = new Queue(
+                PaymentMqConstants.DEAD_LETTER_QUEUE,
+                true,
+                false,
+                false
+        );
+
+        Binding binding = BindingBuilder
+                .bind(queue)
+                .to(exchange)
+                .with(PaymentMqConstants.DEAD_LETTER_ROUTING_KEY);
 
         return new Declarables(exchange, queue, binding);
     }

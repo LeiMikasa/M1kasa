@@ -45,7 +45,7 @@ public class SeckillStockDeductedConsumer {
             )
     )
     public void handle(SeckillStockDeductedMessage message){
-        orderStockConfirmService.confirm(message);
+        orderStockConfirmService.confirm(message,null);
         log.info(
                 "库存成功回执处理完成，requestId={}, orderId={}",
                 message.requestId(),
