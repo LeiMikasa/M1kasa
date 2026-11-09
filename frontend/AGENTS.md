@@ -84,3 +84,8 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 - Pending voucher orders open a phone-scoped payment sheet. The payable amount comes from the backend payment order; voucher list prices do not authorize payment amounts.
 - Mock payment receipts indicate channel acceptance only. Display payment success after the owned order endpoint reports status 2, and poll for at most one bounded session before offering a manual status refresh.
 - Keep unresolved payment attempts scoped to user and order across navigation/reloads. Reuse the original server payment number for an explicit retry; never automatically repeat a payment confirmation after a timeout. Cancel stale requests/polling on unmount or identity changes.
+
+## Common following decisions
+
+- Other users' public profiles provide a Common Following entry below their relation counts. It requires login and uses GET /user/{targetUserId}/common-following with current and size=10.
+- Common-following results show public avatars and nicknames, use the existing paginated list style, and open public user profiles. Back navigation restores the target and page number. Never prefetch this protected list for anonymous visitors or interpret a request error as an empty list.

@@ -3,9 +3,12 @@ import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon
 import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useMobileDevice } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome' | 'commonFollowing';
 type StoryReturn = 'home' | 'myNotes' | 'userHome';
-type JourneySnapshot = { page: Page; blogId: string | null; storyReturn: StoryReturn; userId: string | null; notesPage: number; relationsReturn: 'profile' | 'userHome' };
+type CommonFollowingTarget = { userId: string; nickName: string };
+type CommonFollowingPerson = { userId: string; nickName: string; icon: string | null };
+type CommonFollowingPage = { records: CommonFollowingPerson[]; total: number; current: number; size: number };
+type JourneySnapshot = { page: Page; blogId: string | null; storyReturn: StoryReturn; userId: string | null; notesPage: number; relationsReturn: 'profile' | 'userHome'; commonTarget: CommonFollowingTarget | null; commonPage: number };
 type PublicUserProfile = { userId: string; nickName: string; icon: string | null; followingCount: number; followersCount: number };
 type FeedTab = '推荐' | '附近' | '关注';
 type FollowListMode = 'following' | 'followers';
@@ -1327,6 +1330,46 @@ function FollowPeople({ mode, token, current, viewerId, identityLoading, identit
 
 
 
+function validCommonFollowingPage(value: unknown, current: number): value is CommonFollowingPage {
+  if (!value || typeof value !== 'object') return false;
+  const page = value as Partial<CommonFollowingPage>;
+  return typeof page.total === 'number' && Number.isSafeInteger(page.total) && page.total >= 0
+    && page.current === current && page.size === 10 && Array.isArray(page.records)
+    && page.records.length <= page.size && page.records.length <= page.total
+    && page.records.every(person => person && typeof person.userId === 'string' && positiveUserId(person.userId) !== null
+      && typeof person.nickName === 'string' && (person.icon === null || typeof person.icon === 'string'))
+    && new Set(page.records.map(person => person.userId)).size === page.records.length;
+}
+
+function CommonFollowing({ target, token, viewerId, identityLoading, identityError, current, onPageChange, onIdentityRetry, onLogin, onBack, onOpenUser }: {
+  target: CommonFollowingTarget; token: string; viewerId: string | null; identityLoading: boolean; identityError: string; current: number;
+  onPageChange: (page: number) => void; onIdentityRetry: () => void; onLogin: () => void; onBack: () => void; onOpenUser: (id: string) => void;
+}) {
+  const ready = Boolean(token && viewerId && !identityLoading && !identityError);
+  const result = useResource<CommonFollowingPage>(ready ? '/user/' + encodeURIComponent(target.userId) + '/common-following?current=' + current + '&size=10' : null, token + ':' + viewerId);
+  const page = validCommonFollowingPage(result.data, current) ? result.data : null;
+  const pages = page ? Math.max(1, Math.ceil(page.total / page.size)) : 1;
+  const outOfRange = Boolean(page && current > pages);
+  useEffect(() => { if (outOfRange) onPageChange(pages); }, [outOfRange, onPageChange, pages]);
+  const error = result.error || (ready && !result.loading && !page ? '共同关注返回格式不正确，请重新加载' : '');
+
+  if (!token) return <div className="empty-state common-following-gate"><PersonIcon /><h2>登录后，发现共同的喜欢</h2><p>看看你和这位作者都关注了谁。</p><button type="button" className="primary-button" onClick={onLogin}>登录后查看</button></div>;
+  if (!ready) return <div className="common-following-body"><RequestState loading={identityLoading} error={identityError || (!identityLoading ? '暂时无法确认当前账号，请重试登录状态' : '')} onRetry={onIdentityRetry} /></div>;
+
+  return <section className="common-following-body" aria-label="共同关注列表" data-testid="common-following-list">
+    <div className="common-following-intro"><span className="common-following-symbol"><PersonIcon aria-hidden="true" /></span><div><h1>共同的喜欢</h1><p>你和 <strong>{target.nickName || '这位作者'}</strong> 共同关注的人</p></div></div>
+    <div className="my-notes-toolbar"><span>{page ? '共同关注 ' + page.total + ' 人' : '在这里，遇见相同的喜欢'}</span><button type="button" className="text-button" disabled={result.loading} onClick={result.reload}>刷新列表</button></div>
+    <RequestState loading={result.loading || outOfRange} error={error} onRetry={result.reload} />
+    {page && !result.loading && !error && !outOfRange && <>
+      {page.total === 0 ? <div className="empty-state common-following-empty"><HeartIcon /><h2>还没有共同关注</h2><p>你们暂时还没有关注同一位作者。</p><button type="button" className="outline-button" onClick={onBack}>返回用户主页</button></div> : <>
+        {page.records.length === 0 && <div className="request-state"><p>关注关系已变化，请刷新列表。</p><button type="button" className="outline-button" onClick={result.reload}>重新加载</button></div>}
+        <div className="common-following-people">{page.records.map(person => <article className="follow-person" key={person.userId} data-testid="common-following-person" data-user-id={person.userId}><button type="button" className="common-following-person-link" aria-label={'查看' + (person.nickName || '未知用户') + '的主页'} onClick={() => onOpenUser(person.userId)}><FeedAvatar source={person.icon} /><span className="follow-person-info"><strong>{person.nickName || '未知用户'}</strong><small>你们都关注了 TA</small></span><ChevronRightIcon aria-hidden="true" /></button></article>)}</div>
+        <nav className="pagination" aria-label="共同关注分页"><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span>第 {current} / {pages} 页</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button></nav>
+      </>}
+    </>}
+  </section>;
+}
+
 function validPublicProfile(value: unknown, userId: string): value is PublicUserProfile {
   if (!value || typeof value !== 'object') return false;
   const profile = value as Partial<PublicUserProfile>;
@@ -1372,10 +1415,10 @@ function AuthorNotes({ userId, token, current, refreshKey, isSelf, onPageChange,
   </section>;
 }
 
-function UserHomeIdentity({ profile, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onEdit, onRelations, onConfirmed, onBusyChange }: {
+function UserHomeIdentity({ profile, token, viewerId, identityLoading, identityError, onIdentityRetry, onLogin, onEdit, onRelations, onCommonFollowing, onConfirmed, onBusyChange }: {
   profile: PublicUserProfile; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
   onIdentityRetry: () => void; onLogin: () => void; onEdit: () => void; onRelations: (mode: FollowListMode) => void;
-  onConfirmed: () => void; onBusyChange: (busy: boolean) => void;
+  onCommonFollowing: () => void; onConfirmed: () => void; onBusyChange: (busy: boolean) => void;
 }) {
   const isSelf = Boolean(token && viewerId === profile.userId);
   const needsIdentity = Boolean(token && (!viewerId || identityLoading || identityError));
@@ -1404,13 +1447,14 @@ function UserHomeIdentity({ profile, token, viewerId, identityLoading, identityE
     <div className="user-home-stats" aria-label="用户统计">
       {isSelf ? <><button type="button" aria-label={'关注 ' + profile.followingCount + ' 人'} onClick={() => onRelations('following')}><strong data-testid="following-count">{profile.followingCount}</strong><span>关注<ChevronRightIcon aria-hidden="true" /></span></button><button type="button" aria-label={'粉丝 ' + profile.followersCount + ' 人'} onClick={() => onRelations('followers')}><strong data-testid="followers-count">{profile.followersCount}</strong><span>粉丝<ChevronRightIcon aria-hidden="true" /></span></button></> : <><div><strong data-testid="following-count">{profile.followingCount}</strong><span>关注</span></div><div><strong data-testid="followers-count">{profile.followersCount}</strong><span>粉丝</span></div></>}
     </div>
+    {!isSelf && <button type="button" className="user-home-common" data-testid="common-following-open" aria-label={token ? '查看共同关注' : '登录后查看共同关注'} disabled={busy || Boolean(token && identityLoading)} onClick={() => needsIdentity ? onIdentityRetry() : onCommonFollowing()}><span className="user-home-common-icon"><PersonIcon aria-hidden="true" /></span><span><strong>共同关注</strong><small>{!token ? '登录后，看看你们共同关注了谁' : needsIdentity ? '重试登录状态后查看' : '看看你们共同关注了谁'}</small></span><ChevronRightIcon aria-hidden="true" /></button>}
   </section>;
 }
 
-function UserHome({ userId, token, viewerId, identityLoading, identityError, current, onPageChange, onIdentityRetry, onBack, onLogin, onEdit, onRelations, onOpenNote, onNew }: {
+function UserHome({ userId, token, viewerId, identityLoading, identityError, current, onPageChange, onIdentityRetry, onBack, onLogin, onEdit, onRelations, onCommonFollowing, onOpenNote, onNew }: {
   userId: string; token: string; viewerId: string | null; identityLoading: boolean; identityError: string; current: number;
   onPageChange: (page: number) => void; onIdentityRetry: () => void; onBack: () => void; onLogin: () => void;
-  onEdit: () => void; onRelations: (mode: FollowListMode) => void; onOpenNote: (id: string) => void; onNew: () => void;
+  onEdit: () => void; onRelations: (mode: FollowListMode) => void; onCommonFollowing: (target: CommonFollowingTarget) => void; onOpenNote: (id: string) => void; onNew: () => void;
 }) {
   const result = useResource<PublicUserProfile>('/user/public/' + userId, token);
   const [known, setKnown] = useState<PublicUserProfile | null>(null);
@@ -1432,7 +1476,7 @@ function UserHome({ userId, token, viewerId, identityLoading, identityError, cur
     <header className="page-header user-home-header"><button type="button" aria-label="返回上一页" onClick={onBack} disabled={followBusy}><ArrowLeftIcon /></button><span>用户主页</span><button type="button" className="text-button" onClick={refresh} disabled={result.loading || followBusy}>刷新</button></header>
     <MobileScroll className="m1-scroll full-page user-home-scroll" key={userId + ':' + current}>
       <div className="user-home-body"><RequestState loading={result.loading && !profile} error={error} onRetry={result.reload} />
-        {profile && <><UserHomeIdentity key={userId + ':' + token + ':' + followRefresh} profile={profile} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onEdit={onEdit} onRelations={onRelations} onConfirmed={result.reload} onBusyChange={setFollowBusy} /><AuthorNotes userId={userId} token={token} current={current} refreshKey={notesRefresh} isSelf={isSelf} onPageChange={onPageChange} onOpenNote={onOpenNote} onNew={onNew} /></>}
+        {profile && <><UserHomeIdentity key={userId + ':' + token + ':' + followRefresh} profile={profile} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onEdit={onEdit} onRelations={onRelations} onCommonFollowing={() => onCommonFollowing({userId: profile.userId, nickName: profile.nickName})} onConfirmed={result.reload} onBusyChange={setFollowBusy} /><AuthorNotes userId={userId} token={token} current={current} refreshKey={notesRefresh} isSelf={isSelf} onPageChange={onPageChange} onOpenNote={onOpenNote} onNew={onNew} /></>}
       </div>
     </MobileScroll>
   </>;
@@ -1646,6 +1690,8 @@ export default function Prototype() {
   const [storyReturn, setStoryReturn] = useState<StoryReturn>('home');
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [userNotesPage, setUserNotesPage] = useState(1);
+  const [commonTarget, setCommonTarget] = useState<CommonFollowingTarget | null>(null);
+  const [commonPage, setCommonPage] = useState(1);
   const [relationsReturn, setRelationsReturn] = useState<'profile' | 'userHome'>('profile');
   const [editReturn, setEditReturn] = useState<'profile' | 'userHome'>('profile');
   const journey = useRef<JourneySnapshot[]>([]);
@@ -1702,7 +1748,7 @@ export default function Prototype() {
   function editOwnHome() { setEditReturn('userHome'); if (!token) { openLogin('userHome'); return; } navigate('editProfile'); }
   function finishEditing(saved: boolean) { me.reload(); navigate(editReturn); if (saved) flash('个人资料已保存'); }
   function captureJourney(): JourneySnapshot {
-    return { page: currentPage.current, blogId: selectedBlogId, storyReturn, userId: selectedUserId, notesPage: userNotesPage, relationsReturn };
+    return { page: currentPage.current, blogId: selectedBlogId, storyReturn, userId: selectedUserId, notesPage: userNotesPage, relationsReturn, commonTarget, commonPage };
   }
   function restoreJourney() {
     const previous = journey.current.pop();
@@ -1712,15 +1758,25 @@ export default function Prototype() {
     setSelectedUserId(previous.userId);
     setUserNotesPage(previous.notesPage);
     setRelationsReturn(previous.relationsReturn);
+    setCommonTarget(previous.commonTarget);
+    setCommonPage(previous.commonPage);
     navigate(previous.page);
   }
   function openUserHome(id: string) {
     const target = positiveUserId(id);
-    if (!target || currentPage.current === 'userHome') return;
+    if (!target || (currentPage.current === 'userHome' && target === selectedUserId)) return;
     journey.current.push(captureJourney());
     setSelectedUserId(target);
     setUserNotesPage(1);
     navigate('userHome');
+  }
+  function openCommonFollowing(target: CommonFollowingTarget) {
+    if (!positiveUserId(target.userId)) return;
+    journey.current.push(captureJourney());
+    setCommonTarget(target);
+    setCommonPage(1);
+    if (!token) { openLogin('commonFollowing'); return; }
+    navigate('commonFollowing');
   }
   function openMyHome() {
     if (!token) { openLogin('profile'); return; }
@@ -1786,6 +1842,7 @@ export default function Prototype() {
     setMyNotesPage(1);
     setFollowingPage(1);
     setFollowersPage(1);
+    setCommonPage(1);
     return () => {
       publishRequest.current?.abort();
       publishRequest.current = null;
@@ -1898,8 +1955,9 @@ export default function Prototype() {
 
   return <div className="m1-app">
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
+    {page === 'commonFollowing' && <header className="page-header account-list-header"><button type="button" onClick={restoreJourney} aria-label="返回上一页"><ArrowLeftIcon /></button><span>共同关注</span><span /></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode ? ' account-list-scroll' : ''}`} key={page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
@@ -1946,6 +2004,8 @@ export default function Prototype() {
       {page === 'myNotes' && <MyNotes token={token} current={myNotesPage} refreshKey={lastPublished?.id || ''} onPageChange={setMyNotesPage} onLogin={() => openLogin('myNotes')} onNew={() => navigate('publish')} onOpenNote={id => openPublishedStory(id, 'myNotes')} />}
 
       {relationMode && <FollowPeople mode={relationMode} token={token} current={relationMode === 'following' ? followingPage : followersPage} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onPageChange={relationMode === 'following' ? setFollowingPage : setFollowersPage} onModeChange={openFollowPeople} onOpenUser={openUserHome} onLogin={() => openLogin(relationMode)} onDiscover={() => { setTab('推荐'); navigate('home'); }} />}
+
+      {page === 'commonFollowing' && commonTarget && <CommonFollowing target={commonTarget} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={commonPage} onPageChange={setCommonPage} onIdentityRetry={me.reload} onLogin={() => openLogin('commonFollowing')} onBack={restoreJourney} onOpenUser={openUserHome} />}
 
       {page === 'login' && <>
         <header className="page-header"><button aria-label="返回" onClick={() => { loginAttempt.current += 1; setLoggingIn(false); navigate(loginReturn); }}><ArrowLeftIcon /></button><span>登录巷里</span><span /></header>

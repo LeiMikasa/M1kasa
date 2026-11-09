@@ -11,10 +11,7 @@ import com.m1kasa.m1kasauserservice.mapper.FollowMapper;
 import com.m1kasa.m1kasauserservice.mapper.UserMapper;
 import com.m1kasa.m1kasauserservice.service.FollowService;
 import com.m1kasa.m1kasauserservice.service.UserService;
-import com.m1kasa.user.api.FollowPageDTO;
-import com.m1kasa.user.api.FollowStateDTO;
-import com.m1kasa.user.api.FollowUserDTO;
-import com.m1kasa.user.api.UserDTO;
+import com.m1kasa.user.api.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -139,6 +136,87 @@ public class FollowServiceImpl implements FollowService {
     @Override
     public FollowPageDTO findFollowers(int current, int size) {
         return findRelationPage(current, size, false);
+    }
+
+    @Override
+    public CommonFollowingPageDTO findCommonFollowing(Long targetUserId, int current, int size) {
+        //1.获取登录身份，校验参数
+        Long userId=requireCurrentUserId();
+        validateTargetUserId(targetUserId);
+        if (current<1||size<1||size>50){
+            throw new IllegalArgumentException(
+                    "页码必须大于0，每页条数必须在1到50之间"
+            );
+        }
+        //2.检查目标用户是否存在
+        boolean targetExists = userMapper.exists(
+                new LambdaQueryWrapper<User>()
+                        .eq(User::getId, targetUserId)
+        );
+        if (!targetExists){
+            throw new IllegalArgumentException("目标用户不存在");
+        }
+        //3.获取全部共同关注ID，已经按id升序排列
+        List<Long> commonIds = loadCommonFollowingIds(
+                userId,
+                targetUserId
+        );
+        long total=commonIds.size();
+        //4.计算当前页的起始位置
+        long offset = (long) (current - 1) * size;
+        if (offset>=total){
+            return new CommonFollowingPageDTO(
+                    List.of(),
+                    total,
+                    current,
+                    size
+            );
+        }
+        //5.截取当前页的用户ID
+        int fromIndex=(int) offset;
+        int toIndex=(int) Math.min(offset+size,total);
+        List<Long> pageIds = commonIds.subList(
+                fromIndex,
+                toIndex
+        );
+        // 6. 批量查询当前页的用户资料
+        // 复用现有方法，头像会转换为访问地址
+        List<UserDTO> users = userService.listByIds(pageIds);
+
+        Map<Long, UserDTO> usersById = new HashMap<>();
+
+        for (UserDTO user : users) {
+            usersById.put(user.id(), user);
+        }
+
+        // 7. 按 pageIds 的顺序组装返回结果
+        List<CommonFollowingUserDTO> records = new ArrayList<>();
+
+        for (Long listedUserId : pageIds) {
+            UserDTO user = usersById.get(listedUserId);
+
+            String nickName =
+                    user != null && StringUtils.hasText(user.nickName())
+                            ? user.nickName()
+                            : "未知用户";
+
+            records.add(
+                    new CommonFollowingUserDTO(
+                            listedUserId.toString(),
+                            nickName,
+                            user == null ? null : user.icon()
+                    )
+            );
+        }
+
+        return new CommonFollowingPageDTO(
+                records,
+                total,
+                current,
+                size
+        );
+
+
     }
 
     /**
@@ -285,4 +363,63 @@ public class FollowServiceImpl implements FollowService {
             throw new IllegalArgumentException("目标用户 ID 必须大于 0");
         }
     }
+
+    private Set<String> readCachedCommonFollowing(
+            Long userId,
+            Long targetUserId
+    ){
+        //1.计算两个关注Set的交集
+        Set<String> intersection=stringRedisTemplate
+                .opsForSet()
+                .intersect(
+                  FollowRedisKeys.following(userId),
+                  FollowRedisKeys.following(targetUserId)
+                );
+        //2.交集中必须包含完成标记，结果才可用
+        if (intersection==null||!intersection.contains(FollowRedisKeys.INITIALIZED_MEMBER)){
+            return null;
+        }
+        //3.复制结果，去掉完成标记，只留下用户ID
+        Set<String> userIds=new HashSet<>(intersection);
+        userIds.remove(FollowRedisKeys.INITIALIZED_MEMBER);
+        return userIds;
+    }
+
+    /*
+    * 获取两个人共同关注的用户ID，按ID升序排列
+    * */
+    private List<Long> loadCommonFollowingIds(
+        Long userId,
+        Long targetUserId
+    ){
+        //1.优先读取Redis交集
+        Set<String> cachedIds = readCachedCommonFollowing(
+                userId,
+                targetUserId
+        );
+        //2.至少一方缓存未初始化，尝试初始化两方
+        if (cachedIds==null){
+            initializer.initialize(userId);
+            //查询双方是同一用户时，避免重复调用
+            if (!userId.equals(targetUserId)){
+                initializer.initialize(targetUserId);
+            }
+            //3.初始化完成后，重新伛交集
+            cachedIds=readCachedCommonFollowing(userId,targetUserId);
+        }
+        //4.缓存可能刚好被关注操作三处，改查数据库
+        if (cachedIds==null){
+            return followMapper.selectCommonFollowingIds(
+                    userId,
+                    targetUserId
+            );
+        }
+        // 5. 将字符串 ID 转为 Long，再按数字大小排序
+        return cachedIds.stream()
+                .map(Long::valueOf)
+                .sorted()
+                .toList();
+    }
+
+
 }

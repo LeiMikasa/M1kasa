@@ -2,6 +2,7 @@ package com.m1kasa.m1kasauserservice.controller;
 
 import com.m1kasa.common.dto.Result;
 import com.m1kasa.m1kasauserservice.service.FollowService;
+import com.m1kasa.user.api.CommonFollowingPageDTO;
 import com.m1kasa.user.api.FollowPageDTO;
 import com.m1kasa.user.api.FollowRequest;
 import com.m1kasa.user.api.FollowStateDTO;
@@ -179,6 +180,52 @@ public class FollowController {
                     .status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Result.fail(
                             "粉丝列表暂不可用，请稍后重试"
+                    ));
+        }
+    }
+    /**
+     * 分页查询当前用户与目标用户的共同关注。
+     */
+    @GetMapping("/{targetUserId}/common-following")
+    public ResponseEntity<Result<CommonFollowingPageDTO>>
+    findCommonFollowing(
+            @PathVariable("targetUserId") Long targetUserId,
+            @RequestParam(
+                    name = "current",
+                    defaultValue = "1"
+            ) int current,
+            @RequestParam(
+                    name = "size",
+                    defaultValue = "10"
+            ) int size
+    ) {
+        try {
+            CommonFollowingPageDTO page =
+                    followService.findCommonFollowing(
+                            targetUserId,
+                            current,
+                            size
+                    );
+
+            return ResponseEntity.ok(Result.ok(page));
+
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest()
+                    .body(Result.fail(ex.getMessage()));
+
+        } catch (IllegalStateException
+                 | DataAccessException
+                 | TransactionException ex) {
+            log.error(
+                    "查询共同关注失败，targetUserId={}",
+                    targetUserId,
+                    ex
+            );
+
+            return ResponseEntity
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Result.fail(
+                            "共同关注暂不可用，请稍后重试"
                     ));
         }
     }

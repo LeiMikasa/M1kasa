@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasauserservice.service;
 
+import com.m1kasa.user.api.CommonFollowingPageDTO;
 import com.m1kasa.user.api.FollowPageDTO;
 import com.m1kasa.user.api.FollowStateDTO;
 
@@ -30,4 +31,13 @@ public interface FollowService {
      * 分页查询当前用户的粉丝
      * */
     FollowPageDTO findFollowers(int current,int size);
+
+    /**
+     * 分页查询当前用户与目标用户的共同关注。
+     */
+    CommonFollowingPageDTO findCommonFollowing(
+            Long targetUserId,
+            int current,
+            int size
+    );
 }

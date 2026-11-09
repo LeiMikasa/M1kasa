@@ -589,3 +589,26 @@
 .payment-spinner { display:block; width:22px; height:22px; border:2px solid #6d4b53; border-top-color:#fa827a; border-radius:50%; animation:payment-spin .8s linear infinite; }
 @keyframes payment-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { .payment-spinner { animation:none; } }
+
+/* Common following reuses the existing phone and account-list navigation. */
+.user-home-common { display:flex; align-items:center; gap:11px; width:100%; min-height:66px; margin-top:24px; padding:13px!important; border:1px solid var(--line)!important; border-radius:12px; background:var(--panel)!important; }
+.user-home-common-icon,.common-following-symbol { display:grid; place-items:center; flex:none; width:36px; height:36px; border-radius:50%; background:#493337; color:var(--coral); }
+.user-home-common > span:nth-child(2) { display:flex; flex:1; min-width:0; flex-direction:column; gap:5px; }
+.user-home-common strong { font-size:12px; font-weight:500; }
+.user-home-common small { color:var(--muted); font-size:10px; line-height:1.7; }
+.user-home-common > svg { width:16px; height:16px; color:var(--muted); }
+.common-following-body { padding:8px 22px 28px; }
+.common-following-intro { display:flex; align-items:center; gap:13px; padding:15px 0 22px; margin-bottom:7px; border-bottom:1px solid var(--line); }
+.common-following-symbol { width:44px; height:44px; }
+.common-following-intro > div { flex:1; min-width:0; }
+.common-following-intro h1 { margin:0 0 7px; font:600 22px/1.4 'Noto Serif SC',serif; }
+.common-following-intro p { margin:0; color:var(--muted); font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
+.common-following-intro strong { color:var(--text); font-weight:500; }
+.common-following-person-link { display:flex; align-items:center; gap:13px; width:100%; min-height:48px; }
+.common-following-person-link > .live-author-avatar { width:44px; height:44px; }
+.common-following-person-link > .live-author-avatar > svg { width:23px; height:23px; }
+.common-following-person-link > .follow-person-info { text-align:left; }
+.common-following-person-link > svg { width:16px; height:16px; color:var(--muted); }
+.common-following-empty { padding:58px 0; }
+.common-following-empty h2,.common-following-gate h2 { font-size:20px; }
+.common-following-gate { padding:80px 24px; }
