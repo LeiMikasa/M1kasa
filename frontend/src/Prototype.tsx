@@ -17,7 +17,9 @@ type FollowPeoplePage = { records: FollowPerson[]; total: number; current: numbe
 type Result<T> = { success: boolean; errorMsg: string | null; data: T; total: number | null };
 type User = { id: string | number; nickName: string; icon: string | null };
 type ShopType = { id: number; name: string; icon: string | null };
-type Shop = { id: number; name: string; typeId: number; images: string | null; area: string | null; address: string; avgPrice: number | null; score: number | null; comments: number | null; openHours: string | null; distance: number | null };
+type Shop = { id: number; name: string; typeId: number | null; images: string | null; area: string | null; address: string; avgPrice: number | null; score: number | null; comments: number | null; openHours: string | null; distance: number | null };
+type ShopSearchPage = { records: Shop[]; total: number; current: number; size: number };
+
 type Voucher = { id: number; shopId: number; title: string; subTitle: string | null; rules: string | null; payValue: number; actualValue: number; type: number; status: number; stock: number | null; beginTime: string | null; endTime: string | null };
 type VoucherOrder = { id: string; orderNo?: string | null; voucherId: string; status: number; createTime: string };
 type UploadedImage = { objectKey: string; url: string };
@@ -38,6 +40,8 @@ type ReservationPhase = 'ready' | 'submitting' | 'accepted' | 'uncertain' | 'ord
 type ReservationMarker = { phase: 'accepted' | 'uncertain'; attemptId: string };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
+const SHOP_SEARCH_PAGE_SIZE = 10;
+const SHOP_SEARCH_WINDOW = 10_000;
 const TOKEN_KEY = 'm1kasa.token';
 const AUTH_EVENT = 'm1kasa:unauthorized';
 
@@ -361,6 +365,43 @@ function useResource<T>(path: string | null, identity = '') {
   }, [path, version, identity]);
   const reload = useCallback(() => setVersion(value => value + 1), []);
   return { ...(state.path === path && state.identity === identity ? state : { path, identity, data: null, loading: Boolean(path), error: '' }), reload };
+}
+
+// Search documents have string IDs; validate and adapt them to existing shop cards.
+function parseShopSearchPage(value: unknown, current: number): ShopSearchPage | null {
+  if (!value || typeof value !== 'object') return null;
+  const page = value as Partial<{ records: unknown[]; total: number; current: number; size: number }>;
+  if (typeof page.total !== 'number' || !Number.isSafeInteger(page.total) || page.total < 0
+    || page.current !== current || page.size !== SHOP_SEARCH_PAGE_SIZE || !Array.isArray(page.records)) return null;
+  const expected = Math.min(SHOP_SEARCH_PAGE_SIZE, Math.max(0, page.total - (current - 1) * SHOP_SEARCH_PAGE_SIZE));
+  if (page.records.length !== expected) return null;
+
+  const idOf = (input: unknown): number | null => {
+    if (typeof input !== 'number' && (typeof input !== 'string' || !/^[1-9]\d*$/.test(input))) return null;
+    const number = Number(input);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  };
+  const textOrNull = (input: unknown) => input == null ? null : typeof input === 'string' ? input : undefined;
+  const numberOrNull = (input: unknown) => input == null ? null
+    : typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? input : undefined;
+  const records: Shop[] = [];
+  const ids = new Set<number>();
+  for (const value of page.records) {
+    if (!value || typeof value !== 'object') return null;
+    const shop = value as Record<string, unknown>;
+    const id = idOf(shop.id);
+    const typeId = shop.typeId == null ? null : idOf(shop.typeId);
+    if (id === null || ids.has(id) || (shop.typeId != null && typeId === null)
+      || typeof shop.name !== 'string' || !shop.name.trim()) return null;
+    const images = textOrNull(shop.images), area = textOrNull(shop.area), address = textOrNull(shop.address);
+    const openHours = textOrNull(shop.openHours), avgPrice = numberOrNull(shop.avgPrice);
+    const score = numberOrNull(shop.score), comments = numberOrNull(shop.comments);
+    if (images === undefined || area === undefined || address === undefined || openHours === undefined
+      || avgPrice === undefined || score === undefined || comments === undefined) return null;
+    ids.add(id);
+    records.push({id, typeId, name: shop.name, images, area, address: address || '', avgPrice, score, comments, openHours, distance: null});
+  }
+  return {records, total: page.total, current, size: SHOP_SEARCH_PAGE_SIZE};
 }
 
 function money(cents: number) { return (cents / 100).toFixed(2); }
@@ -1703,6 +1744,7 @@ export default function Prototype() {
   const [publishError, setPublishError] = useState('');
   const publishRequest = useRef<AbortController | null>(null);
   const [selectedShopId, setSelectedShopId] = useState<number | null>(null);
+  const [shopReturn, setShopReturn] = useState<'nearby' | 'search'>('nearby');
   const [selectedVoucher, setSelectedVoucher] = useState<Voucher | null>(null);
   const [typeId, setTypeId] = useState<number | null>(null);
   const [shopPage, setShopPage] = useState(1);
@@ -1725,7 +1767,11 @@ export default function Prototype() {
   const shops = useResource<Shop[]>(listPath);
   const shop = useResource<Shop>(selectedShopId === null ? null : `/shop/${selectedShopId}`);
   const vouchers = useResource<Voucher[]>(selectedShopId === null ? null : `/voucher/list/${selectedShopId}`);
-  const search = useResource<Shop[]>(page === 'search' ? `/shop/of/name?name=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}` : null);
+  const search = useResource<unknown>(page === 'search' ? `/search/shops?keyword=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}&size=${SHOP_SEARCH_PAGE_SIZE}` : null);
+  const searchData = parseShopSearchPage(search.data, searchPage);
+  const searchPages = searchData ? Math.max(1, Math.min(SHOP_SEARCH_WINDOW / SHOP_SEARCH_PAGE_SIZE, Math.ceil(searchData.total / searchData.size))) : 1;
+  const searchOutOfRange = Boolean(searchData && searchPage > searchPages);
+  const searchError = search.error || (page === 'search' && !search.loading && !searchData ? '店铺搜索返回格式不正确，请重新加载' : '');
   const me = useResource<User>(token ? '/user/me' : null, token);
   const notePhotos = useNotePhotos(token, positiveUserId(me.data?.id));
   const showNav = ['home', 'nearby', 'publish', 'messages', 'profile'].includes(page);
@@ -1742,7 +1788,7 @@ export default function Prototype() {
     if (['home', 'nearby', 'profile', 'publish', 'messages', 'search', 'shop', 'checkout'].includes(destination)) journey.current = [];
     currentPage.current = destination; setPage(destination);
   }
-  function openShop(id: number) { setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
+  function openShop(id: number) { setShopReturn(currentPage.current === 'search' ? 'search' : 'nearby'); setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
   function openEditProfile() { setEditReturn('profile'); if (!token) { openLogin('editProfile'); return; } navigate('editProfile'); }
   function editOwnHome() { setEditReturn('userHome'); if (!token) { openLogin('userHome'); return; } navigate('editProfile'); }
@@ -1824,9 +1870,13 @@ export default function Prototype() {
     if (types.data?.length && !types.data.some(type => type.id === typeId)) setTypeId(types.data[0].id);
   }, [types.data, typeId]);
   useEffect(() => {
+    if (query === debouncedQuery) return;
     const timer = window.setTimeout(() => { setDebouncedQuery(query); setSearchPage(1); }, 350);
     return () => window.clearTimeout(timer);
-  }, [query]);
+  }, [query, debouncedQuery]);
+  useEffect(() => {
+    if (page === 'search' && query === debouncedQuery && searchOutOfRange) setSearchPage(searchPages);
+  }, [page, query, debouncedQuery, searchOutOfRange, searchPages]);
   useEffect(() => {
     const expired = () => { setToken(''); flash('登录已过期，请重新登录'); };
     const storage = (event: StorageEvent) => { if (event.key === TOKEN_KEY) setToken(event.newValue || ''); };
@@ -1954,10 +2004,11 @@ export default function Prototype() {
   }
 
   return <div className="m1-app">
+    {page === 'search' && <header className="search-header shop-search-header"><button type="button" onClick={() => navigate('nearby')} aria-label="返回"><ArrowLeftIcon /></button><div><MagnifyingGlassIcon /><KeyboardInput value={query} maxLength={100} onChange={event => setQuery(event.target.value)} placeholder="搜索店铺、区域或地址" aria-label="搜索店铺关键词" />{query && <button type="button" onClick={() => setQuery('')} aria-label="清除搜索"><Cross2Icon /></button>}</div></header>}
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
     {page === 'commonFollowing' && <header className="page-header account-list-header"><button type="button" onClick={restoreJourney} aria-label="返回上一页"><ArrowLeftIcon /></button><span>共同关注</span><span /></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}${page === 'search' ? ' shop-search-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : page === 'search' ? `search:${debouncedQuery.trim()}:${searchPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
@@ -1975,13 +2026,20 @@ export default function Prototype() {
         {typeId !== null && !shops.loading && !shops.error && <div className="pagination"><button disabled={shopPage === 1} onClick={() => setShopPage(value => value - 1)}>上一页</button><span>第 {shopPage} 页</span><button disabled={!shops.data?.length} onClick={() => setShopPage(value => value + 1)}>下一页</button></div>}
       </>}
 
-      {page === 'search' && <>
-        <header className="search-header"><button onClick={() => navigate('nearby')} aria-label="返回"><ArrowLeftIcon /></button><div><MagnifyingGlassIcon /><KeyboardInput value={query} onChange={event => setQuery(event.target.value)} placeholder="输入店铺名称" aria-label="搜索店铺名称" />{query && <button onClick={() => setQuery('')} aria-label="清除搜索"><Cross2Icon /></button>}</div></header>
-        <div className="search-content"><span className="eyebrow">FIND YOUR NEXT STOP</span><h2>{debouncedQuery ? `关于“${debouncedQuery}”` : '从一家小店开始'}</h2><RequestState loading={search.loading || query !== debouncedQuery} error={query === debouncedQuery ? search.error : ''} empty={query === debouncedQuery && search.data?.length === 0} onRetry={search.reload} emptyText="没有找到这家店，换个关键词试试" />{query === debouncedQuery && search.data?.map(shopCard)}{!search.loading && !search.error && query === debouncedQuery && <div className="pagination"><button disabled={searchPage === 1} onClick={() => setSearchPage(value => value - 1)}>上一页</button><span>第 {searchPage} 页</span><button disabled={!search.data?.length} onClick={() => { keyboard.hide(); setSearchPage(value => value + 1); }}>下一页</button></div>}</div>
-      </>}
+      {page === 'search' && <section className="search-content" aria-label="店铺搜索结果" data-testid="shop-search-results">
+        <span className="eyebrow">FIND YOUR NEXT STOP</span>
+        <h2>{debouncedQuery.trim() ? `关于“${debouncedQuery.trim()}”` : '从一家小店开始'}</h2>
+        <RequestState loading={search.loading || query !== debouncedQuery || searchOutOfRange} error={query === debouncedQuery ? searchError : ''} empty={query === debouncedQuery && searchData?.total === 0} onRetry={search.reload} emptyText="没有找到相关店铺，换个名称、区域或地址试试" />
+        {query === debouncedQuery && !search.loading && !searchError && !searchOutOfRange && searchData && <>
+          {searchData.total > 0 && <p className="search-result-summary" role="status">找到 {searchData.total} 家店铺 · 按相关度排序</p>}
+          {searchData.total > SHOP_SEARCH_WINDOW && <p className="search-refine-note">结果较多，可用更具体的店铺名、区域或地址缩小范围。</p>}
+          {searchData.records.map(shopCard)}
+          {searchData.total > 0 && <nav className="pagination" aria-label="店铺搜索分页"><button type="button" disabled={searchPage <= 1} onClick={() => { keyboard.hide(); setSearchPage(value => value - 1); }}>上一页</button><span>第 {searchPage} / {searchPages} 页</span><button type="button" disabled={searchPage >= searchPages} onClick={() => { keyboard.hide(); setSearchPage(value => value + 1); }}>下一页</button></nav>}
+        </>}
+      </section>}
 
       {page === 'shop' && <>
-        <header className="page-header shop-header"><button onClick={() => navigate('nearby')} aria-label="返回"><ArrowLeftIcon /></button><span>店铺详情</span><button onClick={() => flash('店铺分享功能正在准备中')} aria-label="分享"><PaperPlaneIcon /></button></header>
+        <header className="page-header shop-header"><button onClick={() => navigate(shopReturn)} aria-label="返回"><ArrowLeftIcon /></button><span>店铺详情</span><button onClick={() => flash('店铺分享功能正在准备中')} aria-label="分享"><PaperPlaneIcon /></button></header>
         <RequestState loading={shop.loading} error={shop.error} onRetry={shop.reload} />
         {shop.data && <><ShopImage shop={shop.data} className="shop-hero" /><div className="shop-detail"><span className="eyebrow">A LITTLE PLACE TO STAY</span><h1>{shop.data.name}<span className="accent-dot">.</span></h1><p className="shop-description">{shop.data.area || '发现身边值得一去的小店'}</p><div className="shop-score"><StarFilledIcon /><strong>{shop.data.score == null ? '暂无评分' : (shop.data.score / 10).toFixed(1)}</strong><span>· 人均 {shop.data.avgPrice == null ? '待更新' : `¥${shop.data.avgPrice}`}{shop.data.comments != null ? ` · ${shop.data.comments} 条评价` : ''}</span></div><div className="address-row"><MapPinIcon /><span>{shop.data.address || '地址待更新'}<br /><small>营业时间：{shop.data.openHours || '待更新'}</small></span></div></div></>}
         <div className="shop-detail live-vouchers"><div className="section-title coupon-heading"><span>店铺优惠</span><small>{vouchers.data ? `${vouchers.data.length} 张券` : '优惠券'}</small></div><RequestState loading={vouchers.loading} error={vouchers.error} empty={vouchers.data?.length === 0} onRetry={vouchers.reload} emptyText="这家店暂时没有上架的优惠券" />{vouchers.data?.map(voucher => {

@@ -89,3 +89,9 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 
 - Other users' public profiles provide a Common Following entry below their relation counts. It requires login and uses GET /user/{targetUserId}/common-following with current and size=10.
 - Common-following results show public avatars and nicknames, use the existing paginated list style, and open public user profiles. Back navigation restores the target and page number. Never prefetch this protected list for anonymous visitors or interpret a request error as an empty list.
+
+## Shop search decisions
+
+- Keyword searches use GET /search/shops through the gateway, with keyword, current and size=10. This public endpoint returns Result<ShopSearchPageDTO>; read records and total from data, and adapt string document IDs to validated safe shop IDs.
+- Search covers names, areas and addresses. Use server totals for bounded pagination, keep errors distinct from empty results, cancel stale queries and preserve the query and page when returning from shop details. Never fall back to the old name-search endpoint or demonstration data.
+- Nearby category and location browsing continues to use /shop/of/type. Search headers remain fixed outside MobileScroll, and result-page changes reset the result scroll position.

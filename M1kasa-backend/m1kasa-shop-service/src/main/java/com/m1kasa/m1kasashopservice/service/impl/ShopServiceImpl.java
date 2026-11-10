@@ -3,10 +3,16 @@ package com.m1kasa.m1kasashopservice.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.m1kasa.m1kasashopservice.entity.Shop;
+import com.m1kasa.m1kasashopservice.entity.ShopSearchOutbox;
 import com.m1kasa.m1kasashopservice.geo.ShopGeoKeys;
 import com.m1kasa.m1kasashopservice.mapper.ShopMapper;
+import com.m1kasa.m1kasashopservice.mapper.ShopSearchOutboxMapper;
+import com.m1kasa.m1kasashopservice.mq.ShopSearchOutboxDispatcher;
 import com.m1kasa.m1kasashopservice.service.ShopService;
 import com.m1kasa.shop.api.ShopDTO;
+import com.m1kasa.shop.api.message.ShopSearchSyncMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
 import org.springframework.data.geo.GeoResults;
@@ -23,10 +29,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 public class ShopServiceImpl implements ShopService {
@@ -36,19 +39,43 @@ public class ShopServiceImpl implements ShopService {
             Duration.ofMinutes(30);
     private static final Duration EMPTY_TTL=
             Duration.ofMinutes(2);
+    private final ShopSearchOutboxMapper shopSearchOutboxMapper;
 
-    public ShopServiceImpl(ShopMapper shopMapper,
+    public ShopServiceImpl(ShopSearchOutboxMapper shopSearchOutboxMapper, ShopSearchOutboxDispatcher shopSearchOutboxDispatcher, ShopMapper shopMapper,
                            StringRedisTemplate stringRedisTemplate,
                            JsonMapper jsonMapper) {
+        this.shopSearchOutboxMapper = shopSearchOutboxMapper;
+        this.shopSearchOutboxDispatcher = shopSearchOutboxDispatcher;
         this.shopMapper = shopMapper;
         this.stringRedisTemplate = stringRedisTemplate;
         this.jsonMapper = jsonMapper;
     }
-
+    private static final Logger log =
+            LoggerFactory.getLogger(ShopServiceImpl.class);
+    private final ShopSearchOutboxDispatcher shopSearchOutboxDispatcher;
     private final ShopMapper shopMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final JsonMapper jsonMapper;
 
+    private void dispatchSearch(ShopSearchOutbox outbox) {
+
+        shopSearchOutboxDispatcher
+                .dispatchOne(outbox)
+                .whenComplete((unused, error) -> {
+
+                    if (error != null) {
+                        // 任务仍保留在 Outbox，后续可以补发
+                        log.warn(
+                                "店铺搜索消息即时投递失败，"
+                                        + "outboxId={}, shopId={}, requestId={}",
+                                outbox.getId(),
+                                outbox.getShopId(),
+                                outbox.getRequestId(),
+                                error
+                        );
+                    }
+                });
+    }
     @Override
     public ShopDTO getById(Long id) {
         String key=CACHE_PREFIX+id;
@@ -81,53 +108,104 @@ public class ShopServiceImpl implements ShopService {
                 shop.getImages(), shop.getArea(), shop.getAddress(),
                 shop.getX(), shop.getY(), shop.getAvgPrice(),
                 shop.getSold(), shop.getComments(), shop.getScore(),
-                shop.getOpenHours(), distance
+                shop.getOpenHours(), distance,shop.getSearchVersion()
         );
     }
     @Override
     @Transactional
     public boolean update(Shop shop) {
+       if (shop==null||shop.getId()==null){
+           return false;
+       }
         Long id = shop.getId();
-        if (id==null){
-            return false;
-        }
-        //保存更新前的分类，用于从旧分类GEO索引移除
-        Shop before= shopMapper.selectById(id);
+       //1.锁住这家店的记录，读取最新数据和版本
+        Shop before = shopMapper.selectOne(
+                new LambdaQueryWrapper<Shop>()
+                        .eq(Shop::getId, id)
+                        .last("FOR UPDATE")
+        );
         if (before==null){
             return false;
         }
-        shop.setUpdateTime(LocalDateTime.now());
-        if (shopMapper.updateById(shop)==0){
-            return false;
+        Long currentVersion=before.getSearchVersion();
+        if (currentVersion==null||currentVersion<1){
+            throw new IllegalStateException("店铺搜索版本不合法");
         }
-        //请求只传部分字段，因此重新查询更新后的完整店铺
+        //2.递增版本
+        long nextVersion = Math.incrementExact(currentVersion);
+        LocalDateTime now=LocalDateTime.now();
+        shop.setSearchVersion(nextVersion);
+        shop.setUpdateTime(now);
+        if (shopMapper.updateById(shop)!=1){
+            throw new IllegalStateException("更新店铺失败");
+        }
+        //3.请求可能只传了名称，因此重新查询完整店铺
         Shop after=shopMapper.selectById(id);
+        if (after == null) {
+            throw new IllegalStateException("无法读取修改后的店铺");
+        }
+        // 4. 为本次修改生成固定的消息 ID
+        String requestId = UUID.randomUUID().toString();
+
+        ShopSearchSyncMessage message = new ShopSearchSyncMessage(
+                requestId,
+                id,
+                nextVersion,
+                toDTO(after)
+        );
+        // 5. 在当前事务中保存待发送记录
+        ShopSearchOutbox outbox = new ShopSearchOutbox();
+        outbox.setRequestId(requestId);
+        outbox.setShopId(id);
+        outbox.setShopVersion(nextVersion);
+        outbox.setPayload(jsonMapper.writeValueAsString(message));
+        outbox.setStatus(0);
+        outbox.setCreateTime(now);
+        outbox.setUpdateTime(now);
+
+        if (shopSearchOutboxMapper.insert(outbox) != 1) {
+            throw new IllegalStateException("保存店铺搜索同步任务失败");
+        }
+        // 6. 数据库提交成功后，再清理缓存、更新 GEO
         TransactionSynchronizationManager.registerSynchronization(
                 new TransactionSynchronization() {
+
                     @Override
                     public void afterCommit() {
-                        stringRedisTemplate.delete(CACHE_PREFIX+id);
-                        String member=id.toString();
-                        boolean hasPosition=after.getTypeId()!=null&&after.getX()!=null&&after.getY()!=null;
-                        if (hasPosition){
-                            stringRedisTemplate.opsForGeo()
-                                    .add(
-                                            ShopGeoKeys.byTypes(after.getTypeId()),
-                                            new Point(after.getX(),after.getY()),
-                                            member
-                                    );
+                        dispatchSearch(outbox);
+                        stringRedisTemplate.delete(CACHE_PREFIX + id);
+
+                        String member = id.toString();
+
+                        boolean hasPosition =
+                                after.getTypeId() != null
+                                        && after.getX() != null
+                                        && after.getY() != null;
+
+                        if (hasPosition) {
+                            stringRedisTemplate.opsForGeo().add(
+                                    ShopGeoKeys.byTypes(after.getTypeId()),
+                                    new Point(after.getX(), after.getY()),
+                                    member
+                            );
                         }
-                        //换了分类，或者更新后没有坐标；清理旧分类中的位置
+
+                        // 分类变化或没有有效位置时，移除旧分类中的位置
                         if (before.getTypeId() != null
                                 && (!hasPosition
-                                || !before.getTypeId().equals(after.getTypeId()))) {
+                                || !before.getTypeId().equals(
+                                after.getTypeId()
+                        ))) {
+
                             stringRedisTemplate.opsForGeo().remove(
-                                    ShopGeoKeys.byTypes(before.getTypeId()), member
+                                    ShopGeoKeys.byTypes(before.getTypeId()),
+                                    member
                             );
                         }
                     }
                 }
         );
+
         return true;
     }
 
@@ -242,5 +320,27 @@ public class ShopServiceImpl implements ShopService {
                 .stream()
                 .map(this::toDTO)
                 .toList();
+    }
+
+    @Override
+    public List<ShopDTO> scanForSearch(long afterId, int size) {
+        if (afterId<0){
+            throw new IllegalArgumentException(
+                    "店铺ID游标不能小于0"
+            );
+        }
+        if (size<1||size>200){
+            throw new IllegalArgumentException(
+                    "每批读取数量必须在1到100之间"
+            );
+        }
+        Page<Shop> page=new Page<>(1,size);
+        page.setSearchCount(false);
+        LambdaQueryWrapper<Shop> query = new LambdaQueryWrapper<Shop>()
+                .gt(Shop::getId, afterId)
+                .orderByAsc(Shop::getId);
+        List<Shop> shops = shopMapper.selectPage(page, query)
+                .getRecords();
+        return shops.stream().map(this::toDTO).toList();
     }
 }

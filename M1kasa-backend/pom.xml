@@ -29,6 +29,7 @@
         <module>m1kasa-common-auth</module>
         <module>m1kasa-pay-service</module>
         <module>m1kasa-pay-api</module>
+        <module>m1kasa-search-service</module>
     </modules>
 
     <properties>

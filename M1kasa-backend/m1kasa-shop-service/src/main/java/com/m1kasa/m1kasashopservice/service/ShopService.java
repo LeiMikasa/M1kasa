@@ -12,4 +12,5 @@ public interface ShopService {
     List<ShopDTO> listNearByType(Long typeId,long current,double x,double y);
     Long create(Shop shop);
     List<ShopDTO> searchByName(String name,long current);
+    List<ShopDTO> scanForSearch(long afterId,int size);
 }

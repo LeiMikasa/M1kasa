@@ -14,6 +14,7 @@ public record ShopDTO(
         Integer comments,
         Integer score,
         String openHours,
-        Double distance
+        Double distance,
+        Long searchVersion
 ) {
 }

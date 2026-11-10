@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="
+         http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 继承项目父模块的依赖版本和 Java 版本配置 -->
+    <parent>
+        <groupId>com.m1kasa</groupId>
+        <artifactId>m1kasa-backend</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+
+        <!-- 从当前目录的上一层找到父 pom.xml -->
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <!-- 当前模块名称 -->
+    <artifactId>m1kasa-search-service</artifactId>
+
+    <dependencies>
+
+        <!-- 提供 Spring MVC 和内嵌服务器，用来编写搜索 HTTP 接口 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <!-- 提供 Elasticsearch Java 客户端及其自动配置 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-elasticsearch</artifactId>
+        </dependency>
+
+        <!-- 复用项目的公共基础类，例如统一响应对象 -->
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-common-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- 将当前服务注册到 Nacos，并提供服务发现能力 -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <!-- 引入 ShopClient、ShopDTO 和自动配置入口 -->
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-shop-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- 提供 Feign 客户端运行环境 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+
+        <!-- 根据服务名选择一个可用实例 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- 后续将搜索服务打包为可以独立启动的 Spring Boot JAR -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

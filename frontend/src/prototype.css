@@ -612,3 +612,9 @@
 .common-following-empty { padding:58px 0; }
 .common-following-empty h2,.common-following-gate h2 { font-size:20px; }
 .common-following-gate { padding:80px 24px; }
+
+/* Shop search reads the search-service page contract through the gateway. */
+.shop-search-header { position:absolute; inset:0 0 auto; z-index:12; }
+.shop-search-scroll .mobile-scroll,.shop-search-scroll .mobile-scrollbar { top:120px; }
+.search-result-summary { margin:-8px 0 18px; color:var(--muted); font-size:11px; line-height:1.8; }
+.search-refine-note { margin:0 0 16px; color:var(--muted); font-size:11px; line-height:1.8; }

@@ -25,7 +25,16 @@ public class Shop {
     private String openHours;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
+    // 店铺搜索数据版本，后面每次修改时递增
+    private Long searchVersion;
 
+    public Long getSearchVersion() {
+        return searchVersion;
+    }
+
+    public void setSearchVersion(Long searchVersion) {
+        this.searchVersion = searchVersion;
+    }
 
 
     public Long getId() {
