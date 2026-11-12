@@ -22,6 +22,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-shop-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- 向用户服务发送 HTTP 请求 -->
         <dependency>

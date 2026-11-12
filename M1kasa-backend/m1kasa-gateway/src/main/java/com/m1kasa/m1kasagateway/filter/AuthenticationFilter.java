@@ -126,6 +126,8 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
                     // 指定作者的公开笔记分页
                     || path.matches("/blog/of/user/[0-9]+")
                     || "/search/shops".equals(path)
+                    || path.matches("/blog/[0-9]+/comments")
+                    || path.matches("/blog/[0-9]+/comments/[0-9]+/replies")
                     ;
         }
 

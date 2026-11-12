@@ -11,6 +11,8 @@ import com.m1kasa.m1kasashopservice.mq.ShopSearchOutboxDispatcher;
 import com.m1kasa.m1kasashopservice.service.ShopService;
 import com.m1kasa.shop.api.ShopDTO;
 import com.m1kasa.shop.api.message.ShopSearchSyncMessage;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.geo.Distance;
@@ -25,26 +27,38 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class ShopServiceImpl implements ShopService {
     private static final String CACHE_PREFIX=
             "m1kasa:shop:detail:";
     private static final Duration CACHE_TTL=
-            Duration.ofMinutes(30);
+            Duration.ofMinutes(60);
     private static final Duration EMPTY_TTL=
             Duration.ofMinutes(2);
-    private final ShopSearchOutboxMapper shopSearchOutboxMapper;
+    private static final Duration REFRESH_AFTER=Duration.ofMinutes(30);
+    private record CachedShopDetail(ShopDTO data,long refreshAt){
 
-    public ShopServiceImpl(ShopSearchOutboxMapper shopSearchOutboxMapper, ShopSearchOutboxDispatcher shopSearchOutboxDispatcher, ShopMapper shopMapper,
+    }
+    private final RedissonClient redissonClient;
+    private final ShopSearchOutboxMapper shopSearchOutboxMapper;
+    private final Executor shopDetailRebuildExecutor;
+
+    public ShopServiceImpl(RedissonClient redissonClient, ShopSearchOutboxMapper shopSearchOutboxMapper, Executor shopDetailRebuildExecutor, ShopSearchOutboxDispatcher shopSearchOutboxDispatcher, ShopMapper shopMapper,
                            StringRedisTemplate stringRedisTemplate,
                            JsonMapper jsonMapper) {
+        this.redissonClient = redissonClient;
         this.shopSearchOutboxMapper = shopSearchOutboxMapper;
+        this.shopDetailRebuildExecutor = shopDetailRebuildExecutor;
         this.shopSearchOutboxDispatcher = shopSearchOutboxDispatcher;
         this.shopMapper = shopMapper;
         this.stringRedisTemplate = stringRedisTemplate;
@@ -79,24 +93,53 @@ public class ShopServiceImpl implements ShopService {
     @Override
     public ShopDTO getById(Long id) {
         String key=CACHE_PREFIX+id;
-        String cached=stringRedisTemplate.opsForValue()
-                .get(key);
-        if (cached!=null){
-            return cached.isEmpty()?null:
-                    jsonMapper.readValue(cached, ShopDTO.class);
+        CachedShopDetail cached = readShopDetail(key);
+        if (cached==null){
+            return rebuildShopDetail(id,key);
         }
-        Shop shop=shopMapper.selectById(id);
+        if (needsRefresh(cached)){
+            refreshShopDetailAsync(id,key);
+        }
+        return cached.data();
+    }
+    /*
+    * 判断是否需要刷新
+    * */
+    private boolean needsRefresh(CachedShopDetail cached){
+        return cached!=null&&cached.data()!=null
+                &&cached.refreshAt()<=System.currentTimeMillis();
+    }
+    private ShopDTO rebuildShopDetail(Long id,String key){
+        Shop shop = shopMapper.selectById(id);
         if (shop==null){
-            stringRedisTemplate.opsForValue().set(
-                    key,"",EMPTY_TTL
-            );
+            stringRedisTemplate.opsForValue().set(key, "", EMPTY_TTL);
             return null;
         }
         ShopDTO dto=toDTO(shop);
+        CachedShopDetail detail = new CachedShopDetail(
+                dto, System.currentTimeMillis() + REFRESH_AFTER.toMillis()
+        );
         stringRedisTemplate.opsForValue().set(
-                key,jsonMapper.writeValueAsString(dto),CACHE_TTL
+                key,jsonMapper.writeValueAsString(detail),CACHE_TTL
         );
         return dto;
+    }
+    private CachedShopDetail readShopDetail(String key){
+        String value=stringRedisTemplate.opsForValue().get(key);
+        if (value==null){
+            return null;
+        }
+        if (value.isEmpty()){
+            return new CachedShopDetail(null,0L);
+        }
+        JsonNode json = jsonMapper.readTree(value);
+        if (json.has("refreshAt")){
+            return jsonMapper.treeToValue(json,CachedShopDetail.class);
+        }
+        return new CachedShopDetail(
+                jsonMapper.treeToValue(json, ShopDTO.class),
+                0L
+        );
     }
 
     private ShopDTO toDTO(Shop shop) {
@@ -343,4 +386,35 @@ public class ShopServiceImpl implements ShopService {
                 .getRecords();
         return shops.stream().map(this::toDTO).toList();
     }
+    private RLock shopDetailLock(Long id){
+        return redissonClient.getLock("m1kasa:shop:detail:lock:"+id);
+    }
+    private void refreshShopDetailAsync(Long id,String cacheKey){
+       try {
+           shopDetailRebuildExecutor.execute(()->{
+               try {
+                   refreshShopDetail(id, cacheKey);
+               } catch (RuntimeException ex) {
+                   log.warn("异步刷新店铺详情失败，shopId={}", id, ex);
+               }
+           });
+       }catch (RejectedExecutionException ex){
+           log.debug("店铺详情重建线程池已满，shopId={}",id);
+       }
+    }
+    private void refreshShopDetail(Long id,String key){
+        RLock lock = shopDetailLock(id);
+        if (!lock.tryLock()){
+            return;
+        }
+        try {
+            CachedShopDetail latest = readShopDetail(key);
+            if (needsRefresh(latest)){
+                rebuildShopDetail(id,key);
+            }
+        }finally {
+            lock.unlock();
+        }
+    }
+
 }

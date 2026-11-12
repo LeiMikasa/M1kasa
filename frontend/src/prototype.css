@@ -618,3 +618,44 @@
 .shop-search-scroll .mobile-scroll,.shop-search-scroll .mobile-scrollbar { top:120px; }
 .search-result-summary { margin:-8px 0 18px; color:var(--muted); font-size:11px; line-height:1.8; }
 .search-refine-note { margin:0 0 16px; color:var(--muted); font-size:11px; line-height:1.8; }
+
+.story-comments { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; justify-items:start; padding:18px 0 24px; border-top:1px solid var(--line); }
+.story-comments h2 { margin:0; font-size:16px; }
+.story-comment-form { display:flex; align-items:flex-end; gap:10px; width:100%; }
+.story-comment-form textarea { flex:1; min-width:0; min-height:58px; resize:none; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:#2c2225; color:inherit; font:inherit; font-size:13px; }
+.story-comment-form textarea:focus { outline:1px solid var(--coral); }
+.story-comment-list { display:grid; width:100%; list-style:none; padding:0; margin:0; }
+.story-comment { display:grid; grid-template-columns:minmax(0,1fr); padding:13px 0; border-bottom:1px solid var(--line); }
+.story-comment-author { display:flex; align-items:center; gap:9px; justify-self:start; max-width:100%; text-align:left; }
+.story-comment-author .live-author-avatar { width:30px; height:30px; }
+.story-comment-author .live-author-avatar > svg { width:16px; height:16px; }
+.story-comment-author strong { font-size:12px; overflow-wrap:anywhere; }
+.story-comment .story-comment-content { margin:0 0 2px 39px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.story-comment-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:28px; margin-left:39px; color:var(--muted); font-size:11px; }
+.story-comment-meta button { min-height:32px; }
+.story-comments .story-comment-status,.story-comments .story-comment-error { margin:0; font-size:12px; }
+.story-comments .story-comment-status { color:var(--muted); }
+.story-comments .story-comment-error { color:#ffb1a6; }
+.story-comment-composer { width:100%; }
+.story-comment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.story-comment-thread,.story-reply-composer { min-width:0; margin-left:39px; }
+.story-replies-toggle { min-height:32px; text-align:left; }
+.story-reply-list { list-style:none; margin:0; padding:0 0 0 12px; border-left:1px solid var(--line); }
+.story-reply { padding:8px 0; border-bottom:0; }
+.story-reply .story-comment-content,.story-reply .story-comment-meta,.story-reply .story-reply-composer { margin-left:0; }
+.story-reply-attribution { color:var(--muted); }
+.story-reply-composer { margin-top:5px; }
+.story-reply-context { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:32px; color:var(--muted); font-size:11px; }
+.story-reply-context > span { overflow-wrap:anywhere; }
+.story-comment .story-comment-tombstone { margin:0 0 0 39px; color:var(--muted); font-size:12px; }
+
+.note-shop-field { display:flex; min-width:0; align-items:center; gap:8px; margin:2px 0 22px; }
+.note-shop-field .note-shop-select,.note-shop-field .note-shop-remove { min-height:42px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.note-shop-field .note-shop-select { display:flex; flex:1; min-width:0; align-items:center; gap:9px; padding:8px 12px; text-align:left; font-size:12px; }
+.note-shop-select > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.note-shop-field .note-shop-remove { display:grid; flex:none; width:42px; place-items:center; color:var(--muted); }
+.note-shop-select svg,.note-shop-remove svg,.story-shop-tag svg { flex:none; width:16px; height:16px; }
+.note-shop-select svg:first-child,.story-shop-tag svg:first-child { color:var(--coral); }
+.detail-body .story-shop-tag { display:inline-flex; max-width:100%; align-items:center; gap:7px; padding:7px 10px; margin-top:13px; border:1px solid var(--line); border-radius:16px; color:var(--coral); font-size:12px; text-align:left; }
+.story-shop-tag > span { min-width:0; overflow-wrap:anywhere; }
+.detail-body .story-shop-tag-error { color:var(--muted); }

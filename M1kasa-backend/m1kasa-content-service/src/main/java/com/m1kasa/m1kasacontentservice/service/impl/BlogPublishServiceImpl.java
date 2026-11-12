@@ -1,6 +1,7 @@
 package com.m1kasa.m1kasacontentservice.service.impl;
 
 import com.m1kasa.common.base.context.UserContext;
+import com.m1kasa.common.dto.Result;
 import com.m1kasa.common.storage.MinioTemplate;
 import com.m1kasa.content.api.BlogPublishRequest;
 import com.m1kasa.m1kasacontentservice.entity.Blog;
@@ -8,6 +9,9 @@ import com.m1kasa.m1kasacontentservice.entity.BlogImage;
 import com.m1kasa.m1kasacontentservice.mapper.BlogImageMapper;
 import com.m1kasa.m1kasacontentservice.mapper.BlogMapper;
 import com.m1kasa.m1kasacontentservice.service.BlogPublishService;
+import com.m1kasa.shop.api.ShopDTO;
+import com.m1kasa.shop.api.client.ShopClient;
+import feign.FeignException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -26,7 +30,6 @@ public class BlogPublishServiceImpl implements BlogPublishService {
     private static final int MAX_TITLE_LENGTH=60;
     private static final int MAX_CONTENT_LENGTH=10_000;
     private static final int PUBLISHED=1;
-
     // 与上传接口生成的 UUID 文件名格式保持一致
     private static final Pattern IMAGE_FILE_NAME = Pattern.compile(
             "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
@@ -35,10 +38,35 @@ public class BlogPublishServiceImpl implements BlogPublishService {
     private final BlogMapper blogMapper;
     private final MinioTemplate minioTemplate;
     private final BlogImageMapper blogImageMapper;
-    public BlogPublishServiceImpl(BlogMapper blogMapper, MinioTemplate minioTemplate, BlogImageMapper blogImageMapper) {
+    private final ShopClient shopClient;
+    public BlogPublishServiceImpl(BlogMapper blogMapper, MinioTemplate minioTemplate, BlogImageMapper blogImageMapper, ShopClient shopClient) {
         this.blogMapper = blogMapper;
         this.minioTemplate = minioTemplate;
         this.blogImageMapper = blogImageMapper;
+        this.shopClient = shopClient;
+    }
+    private void validateShop(Long shopId){
+        if(shopId==null){
+            return;
+        }
+        if (shopId<=0){
+            throw new IllegalArgumentException("店铺ID必须大于0");
+        }
+        Result<ShopDTO> reply;
+        try {
+            reply=shopClient.getById(shopId);
+        }catch (FeignException ex){
+            throw new IllegalStateException("查询关联店铺失败",ex);
+        }
+        if (reply==null||reply.success()==null){
+            throw new IllegalStateException("店铺服务响应失败");
+        }
+        if (!reply.success()){
+            throw new IllegalStateException("所选店铺不存在");
+        }
+        if (reply.data()==null||!shopId.equals(reply.data().id())){
+            throw new IllegalStateException("店铺服务返回数据异常");
+        }
     }
 
     @Override
@@ -73,6 +101,8 @@ public class BlogPublishServiceImpl implements BlogPublishService {
         }
         //4.校验全部图片
         List<String> imageKeys = validateImages(userId, request);
+        Long shopId = request.shopId();
+        validateShop(shopId);
         //5.保存笔记主记录，第一张图片作为封面
         LocalDateTime now= LocalDateTime.now();
         Blog blog=new Blog();
@@ -85,6 +115,7 @@ public class BlogPublishServiceImpl implements BlogPublishService {
         blog.setStatus(PUBLISHED);
         blog.setCreateTime(now);
         blog.setUpdateTime(now);
+        blog.setShopId(shopId);
         if (blogMapper.insert(blog)!=1||blog.getId()==null){
             throw new IllegalStateException("保存笔记失败");
         }

@@ -39,5 +39,22 @@ public interface BlogMapper extends BaseMapper<Blog> {
             @Param("delta") int delta
     );
 
+    @Update("""
+        UPDATE tb_blog
+        SET comments = comments + 1
+        WHERE id = #{blogId}
+          AND status = 1
+        """)
+    int incrementComments(@Param("blogId") Long blogId);
+
+    @Update("""
+        UPDATE tb_blog
+        SET comments = comments - 1
+        WHERE id = #{blogId}
+          AND status = 1
+          AND comments > 0
+        """)
+    int decrementComments(@Param("blogId") Long blogId);
+
 
 }

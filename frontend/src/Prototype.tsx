@@ -3,7 +3,7 @@ import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon
 import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useMobileDevice } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome' | 'commonFollowing';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome' | 'commonFollowing' | 'pickNoteShop';
 type StoryReturn = 'home' | 'myNotes' | 'userHome';
 type CommonFollowingTarget = { userId: string; nickName: string };
 type CommonFollowingPerson = { userId: string; nickName: string; icon: string | null };
@@ -29,6 +29,12 @@ type AuthorFollow = { targetUserId: string; followed: boolean };
 type AuthorFollowRequestState = { identity: string; data: AuthorFollow | null; phase: 'idle' | 'loading' | 'saving'; error: string; message: string; uncertainTarget: boolean | null };
 type BlogLikeState = { identity: string; data: BlogLike | null; phase: 'idle' | 'loading' | 'saving'; message: string; error: string; uncertainTarget: boolean | null };
 type BlogDetail = { id: string | number; shopId: string | number | null; userId: string | number; authorName: string; authorIcon: string | null; title: string; coverImage: string; imageUrls?: string[]; content: string; liked: number; comments: number; createTime: string | null };
+type BlogComment = {
+  id: string; userId: string | null; authorName: string | null; authorIcon: string | null;
+  content: string; createTime: string | null; replyToCommentId?: string | null;
+  replyToAuthorName?: string | null; replyCount?: number; deleted?: boolean;
+};
+type BlogCommentPage = { records: BlogComment[]; nextCursor: string | null; hasMore: boolean };
 type BlogSummary = { id: string; title: string; coverImage: string | null; liked: number | null; comments: number | null; createTime: string | null };
 type BlogPage = { records: BlogSummary[]; total: number; current: number; size: number };
 type BlogFeedItem = BlogSummary & { userId: string | null; authorName: string; authorIcon: string | null };
@@ -367,6 +373,12 @@ function useResource<T>(path: string | null, identity = '') {
   return { ...(state.path === path && state.identity === identity ? state : { path, identity, data: null, loading: Boolean(path), error: '' }), reload };
 }
 
+function positiveShopId(value: unknown): number | null {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^[1-9]\d*$/.test(value))) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 // Search documents have string IDs; validate and adapt them to existing shop cards.
 function parseShopSearchPage(value: unknown, current: number): ShopSearchPage | null {
   if (!value || typeof value !== 'object') return null;
@@ -376,11 +388,6 @@ function parseShopSearchPage(value: unknown, current: number): ShopSearchPage | 
   const expected = Math.min(SHOP_SEARCH_PAGE_SIZE, Math.max(0, page.total - (current - 1) * SHOP_SEARCH_PAGE_SIZE));
   if (page.records.length !== expected) return null;
 
-  const idOf = (input: unknown): number | null => {
-    if (typeof input !== 'number' && (typeof input !== 'string' || !/^[1-9]\d*$/.test(input))) return null;
-    const number = Number(input);
-    return Number.isSafeInteger(number) && number > 0 ? number : null;
-  };
   const textOrNull = (input: unknown) => input == null ? null : typeof input === 'string' ? input : undefined;
   const numberOrNull = (input: unknown) => input == null ? null
     : typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? input : undefined;
@@ -389,8 +396,8 @@ function parseShopSearchPage(value: unknown, current: number): ShopSearchPage | 
   for (const value of page.records) {
     if (!value || typeof value !== 'object') return null;
     const shop = value as Record<string, unknown>;
-    const id = idOf(shop.id);
-    const typeId = shop.typeId == null ? null : idOf(shop.typeId);
+    const id = positiveShopId(shop.id);
+    const typeId = shop.typeId == null ? null : positiveShopId(shop.typeId);
     if (id === null || ids.has(id) || (shop.typeId != null && typeId === null)
       || typeof shop.name !== 'string' || !shop.name.trim()) return null;
     const images = textOrNull(shop.images), area = textOrNull(shop.area), address = textOrNull(shop.address);
@@ -402,6 +409,28 @@ function parseShopSearchPage(value: unknown, current: number): ShopSearchPage | 
     records.push({id, typeId, name: shop.name, images, area, address: address || '', avgPrice, score, comments, openHours, distance: null});
   }
   return {records, total: page.total, current, size: SHOP_SEARCH_PAGE_SIZE};
+}
+
+function useShopSearch(enabled: boolean) {
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchPage, setSearchPage] = useState(1);
+  const search = useResource<unknown>(enabled ? `/search/shops?keyword=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}&size=${SHOP_SEARCH_PAGE_SIZE}` : null);
+  const searchData = parseShopSearchPage(search.data, searchPage);
+  const searchPages = searchData ? Math.max(1, Math.min(SHOP_SEARCH_WINDOW / SHOP_SEARCH_PAGE_SIZE, Math.ceil(searchData.total / searchData.size))) : 1;
+  const searchOutOfRange = Boolean(searchData && searchPage > searchPages);
+  const searchError = search.error || (enabled && !search.loading && !searchData ? '店铺搜索返回格式不正确，请重新加载' : '');
+
+  useEffect(() => {
+    if (query === debouncedQuery) return;
+    const timer = window.setTimeout(() => { setDebouncedQuery(query); setSearchPage(1); }, 350);
+    return () => window.clearTimeout(timer);
+  }, [query, debouncedQuery]);
+  useEffect(() => {
+    if (enabled && query === debouncedQuery && searchOutOfRange) setSearchPage(searchPages);
+  }, [enabled, query, debouncedQuery, searchOutOfRange, searchPages]);
+
+  return { query, setQuery, debouncedQuery, searchPage, setSearchPage, search, searchData, searchPages, searchOutOfRange, searchError };
 }
 
 function money(cents: number) { return (cents / 100).toFixed(2); }
@@ -1105,15 +1134,365 @@ function StoryGallery({imageUrls, coverImage, title, onReload}: {imageUrls?: str
   </div>;
 }
 
-function PublishedStory({ blogId, token, viewerId, identityLoading, identityError, onIdentityRetry, onBack, onLogin, onNew, onOpenUser }: {
+type CommentPageState = {
+  path: string | null;
+  page: BlogCommentPage | null;
+  loading: boolean;
+  error: { message: string; cursor?: string } | null;
+};
+
+function useStoryCommentPage(path: string | null) {
+  const [state, setState] = useState<CommentPageState>({ path: null, page: null, loading: false, error: null });
+  const request = useRef<AbortController | null>(null);
+
+  const load = useCallback(async (cursor?: string) => {
+    if (!path || request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setState(previous => ({
+      path, page: previous.path === path ? previous.page : null, loading: true, error: null,
+    }));
+
+    const query = new URLSearchParams({ size: '10' });
+    // The replies endpoint also calls this parameter beforeId, even though it reads in ascending order.
+    if (cursor) query.set('beforeId', cursor);
+
+    try {
+      const next = await api<BlogCommentPage>(`${path}?${query}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (!Array.isArray(next?.records) || typeof next.hasMore !== 'boolean'
+        || (next.hasMore && (!positiveUserId(next.nextCursor) || next.nextCursor === cursor))) {
+        throw new Error('评论列表返回格式不正确');
+      }
+      setState(previous => ({
+        path, loading: false, error: null,
+        page: {
+          ...next,
+          records: cursor && previous.path === path && previous.page
+            ? [...previous.page.records, ...next.records]
+            : next.records,
+        },
+      }));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setState(previous => ({
+          ...previous, loading: false,
+          error: { message: error instanceof Error ? error.message : '加载评论失败', cursor },
+        }));
+      }
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }, [path]);
+
+  useEffect(() => {
+    void load();
+    return () => {
+      request.current?.abort();
+      request.current = null;
+    };
+  }, [load]);
+
+  function updateRecords(update: (records: BlogComment[]) => BlogComment[]) {
+    setState(previous => previous.path === path && previous.page
+      ? { ...previous, page: { ...previous.page, records: update(previous.page.records) } }
+      : previous);
+  }
+
+  return {
+    ...(state.path === path ? state : { path, page: null, loading: Boolean(path), error: null }),
+    load, updateRecords,
+  };
+}
+
+function StoryCommentComposer({ draft, setDraft, busy, posting, onSubmit, target, onCancel }: {
+  draft: string; setDraft: (value: string) => void; busy: boolean; posting: boolean;
+  onSubmit: () => void; target?: string; onCancel?: () => void;
+}) {
+  const keyboard = useKeyboard();
+  return <div className={target ? 'story-reply-composer' : 'story-comment-composer'}>
+    {target && <div className="story-reply-context">
+      <span>回复 {target}</span>
+      <button type="button" className="text-button" onClick={onCancel} disabled={posting}>取消回复</button>
+    </div>}
+    <form className="story-comment-form" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
+      <KeyboardTextarea
+        aria-label={target ? `回复 ${target}` : '写评论'}
+        placeholder={target ? '写下你的回复' : '说说你的想法'}
+        rows={2}
+        value={draft}
+        maxLength={1000}
+        disabled={posting}
+        onChange={event => setDraft(event.target.value)}
+        onBlur={() => keyboard.hide()}
+      />
+      <button type="submit" className="outline-button" disabled={busy || !draft.trim()} onPointerDown={event => event.preventDefault()}>
+        {posting ? '发布中…' : target ? '发送回复' : '发布'}
+      </button>
+    </form>
+  </div>;
+}
+
+type CommentReplyTarget = { rootId: string; id: string; name: string };
+type CommentAction =
+  | { kind: 'post'; draft: string; target?: CommentReplyTarget }
+  | { kind: 'delete'; comment: BlogComment; rootId?: string };
+
+function StoryComments({ blogId, token, viewerId, onLogin, onOpenUser, onCountChange }: {
+  blogId: string; token: string; viewerId: string | null;
+  onLogin: () => void; onOpenUser: (id: string) => void; onCountChange: (delta: number) => void;
+}) {
+  const keyboard = useKeyboard();
+  const path = `/blog/${encodeURIComponent(blogId)}/comments`;
+  const [expandedRootId, setExpandedRootId] = useState<string | null>(null);
+  const roots = useStoryCommentPage(path);
+  const replies = useStoryCommentPage(expandedRootId ? `${path}/${encodeURIComponent(expandedRootId)}/replies` : null);
+  const [draft, setDraft] = useState('');
+  const [replyDraft, setReplyDraft] = useState('');
+  const [replyTarget, setReplyTarget] = useState<CommentReplyTarget | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [action, setAction] = useState<CommentAction | null>(null);
+  const [notice, setNotice] = useState<{ commentId?: string; message: string; error?: boolean } | null>(null);
+  const mutation = useRef<AbortController | null>(null);
+  const busy = roots.loading || replies.loading || action !== null;
+
+  useEffect(() => () => mutation.current?.abort(), []);
+
+  function cancelReply() {
+    keyboard.hide();
+    setReplyTarget(null);
+    setReplyDraft('');
+    if (notice?.commentId === replyTarget?.id) setNotice(null);
+  }
+
+  function startReply(comment: BlogComment, rootId: string) {
+    if (!token) { keyboard.hide(); onLogin(); return; }
+    if (replyTarget?.id === comment.id) return;
+    setNotice(null);
+    setReplyDraft('');
+    setReplyTarget({ rootId, id: comment.id, name: comment.authorName || '未知用户' });
+  }
+
+  function toggleReplies(rootId: string) {
+    if (replyTarget && replyTarget.rootId === expandedRootId && replyTarget.id !== expandedRootId) {
+      cancelReply();
+    }
+    setExpandedRootId(expandedRootId === rootId ? null : rootId);
+  }
+
+  function updateReplyCount(rootId: string, delta: number) {
+    roots.updateRecords(records => records.flatMap(record => {
+      if (record.id !== rootId) return [record];
+      const replyCount = Math.max(0, (record.replyCount ?? 0) + delta);
+      return record.deleted && replyCount === 0 ? [] : [{ ...record, replyCount }];
+    }));
+  }
+
+  async function changeComment(next: CommentAction) {
+    if (busy || mutation.current || !token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    const commentId = next.kind === 'delete' ? next.comment.id : next.target?.id;
+    const content = next.kind === 'post' ? next.draft.trim() : '';
+    if (next.kind === 'post' && (!content || Array.from(content).length > 500)) {
+      setNotice({ commentId, message: '请输入 1–500 个字符的评论', error: true });
+      return;
+    }
+
+    keyboard.hide();
+    const controller = new AbortController();
+    mutation.current = controller;
+    setAction(next);
+    setNotice(null);
+
+    try {
+      if (next.kind === 'delete') {
+        await api<null>(`${path}/${encodeURIComponent(next.comment.id)}`, { method: 'DELETE', signal: controller.signal });
+      } else {
+        const body = next.target ? { content, replyToCommentId: next.target.id } : { content };
+        await api<string>(path, { method: 'POST', body: JSON.stringify(body), signal: controller.signal });
+      }
+
+      if (controller.signal.aborted || localStorage.getItem(TOKEN_KEY) !== token) return;
+      onCountChange(next.kind === 'delete' ? -1 : 1);
+
+      if (next.kind === 'delete') {
+        const { comment, rootId } = next;
+        replies.updateRecords(records => records
+          .filter(record => record.id !== comment.id)
+          .map(record => record.replyToCommentId === comment.id
+            ? { ...record, replyToAuthorName: '原评论已删除' }
+            : record));
+
+        if (rootId) {
+          const root = roots.page?.records.find(record => record.id === rootId);
+          updateReplyCount(rootId, -1);
+          if (root?.deleted && root.replyCount === 1) setExpandedRootId(null);
+        } else {
+          roots.updateRecords(records => records.flatMap(record => {
+            if (record.id !== comment.id) return [record];
+            return (record.replyCount ?? 0) > 0
+              ? [{ ...record, deleted: true, userId: null, authorName: null, authorIcon: null, content: '该评论已删除' }]
+              : [];
+          }));
+          if ((comment.replyCount ?? 0) === 0 && expandedRootId === comment.id) setExpandedRootId(null);
+        }
+
+        if (replyTarget?.id === comment.id) cancelReply();
+        setConfirmDelete(null);
+      } else if (next.target) {
+        const { rootId } = next.target;
+        setReplyDraft('');
+        setReplyTarget(null);
+        setNotice({ commentId: rootId, message: '回复已发布' });
+        updateReplyCount(rootId, 1);
+        if (expandedRootId !== rootId) setExpandedRootId(rootId);
+        else if (!replies.page?.hasMore) void replies.load(replies.page?.records.at(-1)?.id);
+      } else {
+        setDraft('');
+        void roots.load();
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const uncertain = error instanceof ApiError && (error.status === 0 || error.status >= 500);
+        setNotice({
+          commentId,
+          message: uncertain ? '操作结果待确认，请刷新笔记核对评论后再试'
+            : error instanceof Error ? error.message : '评论操作失败',
+          error: true,
+        });
+      }
+    } finally {
+      if (mutation.current === controller) {
+        mutation.current = null;
+        setAction(null);
+      }
+    }
+  }
+
+  function renderNotice(commentId?: string) {
+    if (!notice || notice.commentId !== commentId) return null;
+    return <p className={notice.error ? 'story-comment-error' : 'story-comment-status'} role={notice.error ? 'alert' : 'status'}>{notice.message}</p>;
+  }
+
+  function renderComment(comment: BlogComment, rootId?: string) {
+    if (comment.deleted) return <><p className="story-comment-tombstone">该评论已删除</p>{renderNotice(comment.id)}</>;
+    const authorId = comment.userId;
+    const name = comment.authorName || '未知用户';
+    const selected = replyTarget?.id === comment.id ? replyTarget : null;
+    const isDeleting = action?.kind === 'delete' && action.comment.id === comment.id;
+
+    return <>
+      <button className="story-comment-author" type="button" disabled={!authorId} onClick={() => authorId && onOpenUser(authorId)}>
+        <FeedAvatar source={comment.authorIcon} />
+        <strong>{name}</strong>
+      </button>
+      <p className="story-comment-content">
+        {comment.replyToAuthorName && <span className="story-reply-attribution">回复 {comment.replyToAuthorName}：</span>}
+        {comment.content}
+      </p>
+      <div className="story-comment-meta">
+        <time dateTime={comment.createTime ?? undefined}>{timeLabel(comment.createTime)}</time>
+        <div className="story-comment-actions">
+          <button type="button" className="text-button" aria-label={`回复 ${name}`} disabled={busy} onClick={() => startReply(comment, rootId ?? comment.id)}>回复</button>
+          {token && viewerId && viewerId === authorId && (confirmDelete === comment.id
+            ? <>
+              <button type="button" className="text-button" disabled={busy} onClick={() => setConfirmDelete(null)}>取消</button>
+              <button type="button" className="text-button" disabled={busy} onClick={() => void changeComment({ kind: 'delete', comment, rootId })}>{isDeleting ? '删除中…' : '确认删除'}</button>
+            </>
+            : <button type="button" className="text-button" disabled={busy} onClick={() => { keyboard.hide(); setConfirmDelete(comment.id); }}>删除</button>)}
+        </div>
+      </div>
+      {selected && token && <StoryCommentComposer
+        draft={replyDraft} setDraft={setReplyDraft} busy={busy}
+        posting={action?.kind === 'post' && action.target?.id === comment.id}
+        target={selected.name} onCancel={cancelReply}
+        onSubmit={() => void changeComment({ kind: 'post', draft: replyDraft, target: selected })}
+      />}
+      {renderNotice(comment.id)}
+    </>;
+  }
+
+  return <section className="story-comments" aria-labelledby="story-comments-heading">
+    <h2 id="story-comments-heading">评论</h2>
+    {token ? <StoryCommentComposer
+      draft={draft} setDraft={setDraft} busy={busy}
+      posting={action?.kind === 'post' && !action.target}
+      onSubmit={() => void changeComment({ kind: 'post', draft })}
+    /> : <button type="button" className="outline-button" onClick={onLogin}>登录后评论</button>}
+    {renderNotice()}
+
+    {roots.page?.records.length ? <ul className="story-comment-list">
+      {roots.page.records.map(comment => {
+        const expanded = expandedRootId === comment.id;
+        const replyCount = comment.replyCount ?? 0;
+        const threadId = `story-comment-replies-${comment.id}`;
+        return <li className="story-comment" key={comment.id}>
+          {renderComment(comment)}
+          {(replyCount > 0 || expanded) && <div className="story-comment-thread">
+            <button type="button" className="text-button story-replies-toggle" aria-expanded={expanded}
+              aria-controls={expanded ? threadId : undefined} disabled={busy} onClick={() => toggleReplies(comment.id)}>
+              {expanded ? '收起回复' : `展开 ${replyCount} 条回复`}
+            </button>
+            {expanded && <div id={threadId}>
+              {replies.page?.records.length ? <ul className="story-reply-list">
+                {replies.page.records.map(reply => <li className="story-comment story-reply" key={reply.id}>
+                  {renderComment(reply, comment.id)}
+                </li>)}
+              </ul> : null}
+              {replies.loading && <p className="story-comment-status" role="status">正在加载回复…</p>}
+              {replies.error && <p className="story-comment-error" role="alert">{replies.error.message}</p>}
+              {replies.page && !replies.page.records.length && !replies.loading && !replies.error
+                && <p className="story-comment-status">暂无回复</p>}
+              {!replies.loading && (replies.error || replies.page?.hasMore) && <button
+                type="button" className="text-button story-replies-toggle" disabled={busy}
+                onClick={() => void replies.load(replies.error ? replies.error.cursor : replies.page?.nextCursor ?? undefined)}
+              >{replies.error ? '重试加载回复' : '加载更多回复'}</button>}
+            </div>}
+          </div>}
+        </li>;
+      })}
+    </ul> : null}
+
+    {roots.error && <p className="story-comment-error" role="alert">{roots.error.message}</p>}
+    {roots.loading && <p className="story-comment-status" role="status">正在加载评论…</p>}
+    {roots.page && !roots.page.records.length && !roots.page.hasMore && !roots.error && !roots.loading
+      && <p className="story-comment-status">还没有评论</p>}
+    {!roots.loading && (roots.error || roots.page?.hasMore) && <button
+      type="button" className="outline-button" disabled={busy}
+      onClick={() => void roots.load(roots.error ? roots.error.cursor : roots.page?.nextCursor ?? undefined)}
+    >{roots.error ? '重新加载评论' : '加载更多评论'}</button>}
+  </section>;
+}
+
+
+function StoryShopTag({ shopId, onOpen }: { shopId: number; onOpen: (id: number) => void }) {
+  const shop = useResource<Shop>(`/shop/${shopId}`);
+  if (shop.loading) return <span className="story-shop-tag" role="status"><MapPinIcon aria-hidden="true" />正在读取关联店铺…</span>;
+
+  const name = shop.data && positiveShopId(shop.data.id) === shopId && typeof shop.data.name === 'string'
+    ? shop.data.name.trim() : '';
+  if (!name || shop.error) return <span className="story-shop-tag story-shop-tag-error">
+    <MapPinIcon aria-hidden="true" /><span>关联店铺暂不可用</span>
+    <button type="button" className="text-button" onClick={shop.reload}>重试</button>
+  </span>;
+
+  return <button type="button" className="story-shop-tag" onClick={() => onOpen(shopId)} aria-label={`查看店铺 ${name}`}>
+    <MapPinIcon aria-hidden="true" /><span>{name}</span><ChevronRightIcon aria-hidden="true" />
+  </button>;
+}
+
+function PublishedStory({ blogId, token, viewerId, identityLoading, identityError, onIdentityRetry, onBack, onLogin, onNew, onOpenUser, onOpenShop }: {
   blogId: string; token: string; viewerId: string | null; identityLoading: boolean; identityError: string;
   onIdentityRetry: () => void; onBack: () => void; onLogin: () => void; onNew: () => void; onOpenUser: (id: string) => void;
+  onOpenShop: (id: number) => void;
 }) {
   const story = useResource<BlogDetail>(`/blog/${encodeURIComponent(blogId)}`, token);
   const likes = useBlogLike(blogId, token);
   const [followBusy, setFollowBusy] = useState(false);
   const reload = () => { story.reload(); void likes.reload(); };
   const blog = story.data;
+  const linkedShopId = positiveShopId(blog?.shopId);
+  const [commentCount, setCommentCount] = useState<{ blog: BlogDetail; value: number } | null>(null);
+  const displayedComments = commentCount && commentCount.blog === blog ? commentCount.value : blog?.comments ?? 0;
   const mismatched = Boolean(blog && String(blog.id) !== blogId);
 
   return <>
@@ -1126,8 +1505,14 @@ function PublishedStory({ blogId, token, viewerId, identityLoading, identityErro
         <StoryAuthor blog={blog} token={token} viewerId={viewerId} identityLoading={identityLoading} identityError={identityError} onIdentityRetry={onIdentityRetry} onLogin={onLogin} onBusyChange={setFollowBusy} onOpenUser={onOpenUser} />
         <h1>{blog.title}</h1>
         <p className="live-story-content">{blog.content}</p>
-        {token ? <StoryLikeActions likes={likes} comments={blog.comments ?? 0} /> : <section className="live-like-section" aria-label="笔记互动"><div className="live-story-stats"><button type="button" className="live-like-button" onClick={onLogin}><HeartIcon aria-hidden="true" /><span>登录后点赞</span><small>{blog.liked ?? 0} 次赞</small></button><span><ChatBubbleIcon aria-hidden="true" />{blog.comments ?? 0} 条评论</span></div></section>}
-        <p className="preview-caption">评论功能正在准备中。</p>
+        {linkedShopId !== null && <StoryShopTag key={linkedShopId} shopId={linkedShopId} onOpen={onOpenShop} />}
+        {token ? <StoryLikeActions likes={likes} comments={displayedComments} /> : <section className="live-like-section" aria-label="笔记互动"><div className="live-story-stats"><button type="button" className="live-like-button" onClick={onLogin}><HeartIcon aria-hidden="true" /><span>登录后点赞</span><small>{blog.liked ?? 0} 次赞</small></button><span><ChatBubbleIcon aria-hidden="true" />{displayedComments} 条评论</span></div></section>}
+        <StoryComments key={token} blogId={blogId} token={token} viewerId={viewerId} onLogin={onLogin} onOpenUser={onOpenUser} onCountChange={delta => {
+          setCommentCount(previous => ({
+            blog,
+            value: Math.max(0, (previous?.blog === blog ? previous.value : blog.comments ?? 0) + delta),
+          }));
+        }} />
         <button className="coral-button" onClick={onNew}>继续记录好地方 <PlusIcon /></button>
       </div>
     </>}
@@ -1721,9 +2106,7 @@ export default function Prototype() {
   currentPage.current = page;
   const [tab, setTab] = useState<FeedTab>('推荐');
   const [feedPage, setFeedPage] = useState(1);
-  const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [draft, setDraft] = useState({ title: '', body: '' });
+  const [draft, setDraft] = useState<{ title: string; body: string; shop: Pick<Shop, 'id' | 'name'> | null }>({ title: '', body: '', shop: null });
   const photoInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState('');
   const toastTimer = useRef<number | undefined>(undefined);
@@ -1744,11 +2127,10 @@ export default function Prototype() {
   const [publishError, setPublishError] = useState('');
   const publishRequest = useRef<AbortController | null>(null);
   const [selectedShopId, setSelectedShopId] = useState<number | null>(null);
-  const [shopReturn, setShopReturn] = useState<'nearby' | 'search'>('nearby');
+  const [shopReturn, setShopReturn] = useState<'nearby' | 'search' | 'story'>('nearby');
   const [selectedVoucher, setSelectedVoucher] = useState<Voucher | null>(null);
   const [typeId, setTypeId] = useState<number | null>(null);
   const [shopPage, setShopPage] = useState(1);
-  const [searchPage, setSearchPage] = useState(1);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -1767,11 +2149,12 @@ export default function Prototype() {
   const shops = useResource<Shop[]>(listPath);
   const shop = useResource<Shop>(selectedShopId === null ? null : `/shop/${selectedShopId}`);
   const vouchers = useResource<Voucher[]>(selectedShopId === null ? null : `/voucher/list/${selectedShopId}`);
-  const search = useResource<unknown>(page === 'search' ? `/search/shops?keyword=${encodeURIComponent(debouncedQuery.trim())}&current=${searchPage}&size=${SHOP_SEARCH_PAGE_SIZE}` : null);
-  const searchData = parseShopSearchPage(search.data, searchPage);
-  const searchPages = searchData ? Math.max(1, Math.min(SHOP_SEARCH_WINDOW / SHOP_SEARCH_PAGE_SIZE, Math.ceil(searchData.total / searchData.size))) : 1;
-  const searchOutOfRange = Boolean(searchData && searchPage > searchPages);
-  const searchError = search.error || (page === 'search' && !search.loading && !searchData ? '店铺搜索返回格式不正确，请重新加载' : '');
+  const pickingShop = page === 'pickNoteShop';
+  const isShopSearch = page === 'search' || pickingShop;
+  const browseSearch = useShopSearch(page === 'search');
+  const noteShopSearch = useShopSearch(pickingShop);
+  const { query, setQuery, debouncedQuery, searchPage, setSearchPage, search, searchData, searchPages, searchOutOfRange, searchError } =
+    pickingShop ? noteShopSearch : browseSearch;
   const me = useResource<User>(token ? '/user/me' : null, token);
   const notePhotos = useNotePhotos(token, positiveUserId(me.data?.id));
   const showNav = ['home', 'nearby', 'publish', 'messages', 'profile'].includes(page);
@@ -1785,10 +2168,27 @@ export default function Prototype() {
   }, []);
   function navigate(destination: Page) {
     keyboard.hide();
-    if (['home', 'nearby', 'profile', 'publish', 'messages', 'search', 'shop', 'checkout'].includes(destination)) journey.current = [];
+    if (['home', 'nearby', 'profile', 'publish', 'messages', 'search'].includes(destination)) journey.current = [];
     currentPage.current = destination; setPage(destination);
   }
-  function openShop(id: number) { setShopReturn(currentPage.current === 'search' ? 'search' : 'nearby'); setSelectedShopId(id); setSelectedVoucher(null); navigate('shop'); }
+  function openShop(id: number) {
+    const source = currentPage.current;
+    setShopReturn(source === 'search' || source === 'story' ? source : 'nearby');
+    if (selectedShopId === id) shop.reload();
+    setSelectedShopId(id);
+    setSelectedVoucher(null);
+    navigate('shop');
+  }
+  function selectNoteShop(item: Shop) {
+    setDraft(previous => ({ ...previous, shop: { id: item.id, name: item.name } }));
+    if (publishPhase !== 'uncertain') setPublishError('');
+    navigate('publish');
+  }
+  function removeNoteShop() {
+    keyboard.hide();
+    setDraft(previous => ({ ...previous, shop: null }));
+    if (publishPhase !== 'uncertain') setPublishError('');
+  }
   function openLogin(returnTo: Page = 'profile') { setLoginReturn(returnTo); setLoginError(''); navigate('login'); }
   function openEditProfile() { setEditReturn('profile'); if (!token) { openLogin('editProfile'); return; } navigate('editProfile'); }
   function editOwnHome() { setEditReturn('userHome'); if (!token) { openLogin('userHome'); return; } navigate('editProfile'); }
@@ -1870,14 +2270,6 @@ export default function Prototype() {
     if (types.data?.length && !types.data.some(type => type.id === typeId)) setTypeId(types.data[0].id);
   }, [types.data, typeId]);
   useEffect(() => {
-    if (query === debouncedQuery) return;
-    const timer = window.setTimeout(() => { setDebouncedQuery(query); setSearchPage(1); }, 350);
-    return () => window.clearTimeout(timer);
-  }, [query, debouncedQuery]);
-  useEffect(() => {
-    if (page === 'search' && query === debouncedQuery && searchOutOfRange) setSearchPage(searchPages);
-  }, [page, query, debouncedQuery, searchOutOfRange, searchPages]);
-  useEffect(() => {
     const expired = () => { setToken(''); flash('登录已过期，请重新登录'); };
     const storage = (event: StorageEvent) => { if (event.key === TOKEN_KEY) setToken(event.newValue || ''); };
     window.addEventListener(AUTH_EVENT, expired);
@@ -1919,7 +2311,10 @@ export default function Prototype() {
     try {
       const result = await api<string | number>('/blog', {
         method: 'POST',
-        body: JSON.stringify({ title, imageObjectKeys: imageKeys, content }),
+        body: JSON.stringify({
+          title, imageObjectKeys: imageKeys, content,
+          ...(draft.shop ? { shopId: draft.shop.id } : {}),
+        }),
         signal: controller.signal,
       });
       if (!active()) return;
@@ -1929,7 +2324,7 @@ export default function Prototype() {
       setFeedPage(1);
       setMyNotesPage(1);
       setPublishPhase('idle');
-      setDraft({ title: '', body: '' });
+      setDraft({ title: '', body: '', shop: null });
       notePhotos.clear();
       flash('故事发布成功');
       if (currentPage.current === 'publish') openPublishedStory(id, 'myNotes');
@@ -1996,19 +2391,22 @@ export default function Prototype() {
   }
 
   function shopCard(item: Shop) {
-    return <button className="live-shop-card" key={item.id} onClick={() => openShop(item.id)}>
+    const selected = pickingShop && draft.shop?.id === item.id;
+    return <button type="button" className="live-shop-card" key={item.id}
+      aria-label={pickingShop ? `关联 ${item.name}` : undefined}
+      onClick={() => pickingShop ? selectNoteShop(item) : openShop(item.id)}>
       <ShopImage shop={item} />
       <span className="live-shop-copy"><strong>{item.name}</strong><span className="rating"><StarFilledIcon />{item.score == null ? '暂无评分' : (item.score / 10).toFixed(1)}<i>·</i>{item.avgPrice == null ? '人均待更新' : `人均 ¥${item.avgPrice}`}</span><small>{item.area || item.address || '地址待更新'}</small>{item.distance != null && <em>距你 {item.distance >= 1000 ? `${(item.distance / 1000).toFixed(1)} km` : `${Math.round(item.distance)} m`}</em>}</span>
-      <ChevronRightIcon />
+      {selected ? <CheckIcon aria-label="已选" /> : <ChevronRightIcon aria-hidden="true" />}
     </button>;
   }
 
   return <div className="m1-app">
-    {page === 'search' && <header className="search-header shop-search-header"><button type="button" onClick={() => navigate('nearby')} aria-label="返回"><ArrowLeftIcon /></button><div><MagnifyingGlassIcon /><KeyboardInput value={query} maxLength={100} onChange={event => setQuery(event.target.value)} placeholder="搜索店铺、区域或地址" aria-label="搜索店铺关键词" />{query && <button type="button" onClick={() => setQuery('')} aria-label="清除搜索"><Cross2Icon /></button>}</div></header>}
+    {isShopSearch && <header className="search-header shop-search-header"><button type="button" onClick={() => navigate(pickingShop ? 'publish' : 'nearby')} aria-label={pickingShop ? '返回发布' : '返回'}><ArrowLeftIcon /></button><div><MagnifyingGlassIcon /><KeyboardInput value={query} maxLength={100} onChange={event => setQuery(event.target.value)} placeholder="搜索店铺、区域或地址" aria-label="搜索店铺关键词" />{query && <button type="button" onClick={() => setQuery('')} aria-label="清除搜索"><Cross2Icon /></button>}</div></header>}
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
     {page === 'commonFollowing' && <header className="page-header account-list-header"><button type="button" onClick={restoreJourney} aria-label="返回上一页"><ArrowLeftIcon /></button><span>共同关注</span><span /></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}${page === 'search' ? ' shop-search-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : page === 'search' ? `search:${debouncedQuery.trim()}:${searchPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} onOpenShop={openShop} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}${isShopSearch ? ' shop-search-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : isShopSearch ? `${page}:${debouncedQuery.trim()}:${searchPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
@@ -2026,9 +2424,9 @@ export default function Prototype() {
         {typeId !== null && !shops.loading && !shops.error && <div className="pagination"><button disabled={shopPage === 1} onClick={() => setShopPage(value => value - 1)}>上一页</button><span>第 {shopPage} 页</span><button disabled={!shops.data?.length} onClick={() => setShopPage(value => value + 1)}>下一页</button></div>}
       </>}
 
-      {page === 'search' && <section className="search-content" aria-label="店铺搜索结果" data-testid="shop-search-results">
-        <span className="eyebrow">FIND YOUR NEXT STOP</span>
-        <h2>{debouncedQuery.trim() ? `关于“${debouncedQuery.trim()}”` : '从一家小店开始'}</h2>
+      {isShopSearch && <section className="search-content" aria-label={pickingShop ? '关联店铺搜索结果' : '店铺搜索结果'} data-testid="shop-search-results">
+        {!pickingShop && <span className="eyebrow">FIND YOUR NEXT STOP</span>}
+        <h2>{pickingShop ? '选择关联店铺' : debouncedQuery.trim() ? `关于“${debouncedQuery.trim()}”` : '从一家小店开始'}</h2>
         <RequestState loading={search.loading || query !== debouncedQuery || searchOutOfRange} error={query === debouncedQuery ? searchError : ''} empty={query === debouncedQuery && searchData?.total === 0} onRetry={search.reload} emptyText="没有找到相关店铺，换个名称、区域或地址试试" />
         {query === debouncedQuery && !search.loading && !searchError && !searchOutOfRange && searchData && <>
           {searchData.total > 0 && <p className="search-result-summary" role="status">找到 {searchData.total} 家店铺 · 按相关度排序</p>}
@@ -2087,6 +2485,17 @@ export default function Prototype() {
           <label htmlFor="note-title">一句话标题</label><KeyboardInput id="note-title" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" />
           <label htmlFor="note-content">说说你的故事</label><KeyboardTextarea id="note-content" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} />
           <small className="draft-counter">{draft.body.length} / 10000</small>
+          <div className="note-shop-field">
+            <button type="button" className="note-shop-select" disabled={publishPhase === 'submitting'}
+              aria-label={draft.shop ? `更换关联店铺 ${draft.shop.name}` : undefined}
+              onPointerDown={event => event.preventDefault()} onClick={() => navigate('pickNoteShop')}>
+              <MapPinIcon aria-hidden="true" />
+              <span>{draft.shop?.name ?? '添加关联店铺'}</span>
+              <ChevronRightIcon aria-hidden="true" />
+            </button>
+            {draft.shop && <button type="button" className="note-shop-remove" aria-label="移除关联店铺"
+              disabled={publishPhase === 'submitting'} onClick={removeNoteShop}><Cross2Icon aria-hidden="true" /></button>}
+          </div>
           <p className="checkout-note">发布后可以查看完整故事。发布前，草稿仅在当前页面暂存，刷新后不会保留。</p>
           {publishError && <p className="form-error publish-error" role="alert">{publishError}</p>}
           <button className="coral-button" type="button" disabled={publishPhase === 'submitting' || notePhotos.busy || Boolean(token && notePhotos.photos.length && !notePhotos.ready)} onClick={() => void publishStory(publishPhase === 'uncertain')}>{publishPhase === 'submitting' ? '正在发布…' : notePhotos.busy ? '图片上传中…' : !token ? '登录并发布' : publishPhase === 'uncertain' ? '仍要再次发布' : '发布故事'}</button>

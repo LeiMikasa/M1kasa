@@ -4,6 +4,7 @@ import com.m1kasa.common.dto.Result;
 import com.m1kasa.shop.api.ShopDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
@@ -24,4 +25,6 @@ public interface ShopClient {
             @RequestParam("size")
             int size
     );
+    @GetMapping("/shop/{id}")
+    Result<ShopDTO> getById(@PathVariable("id") Long id);
 }

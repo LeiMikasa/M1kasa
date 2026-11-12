@@ -6,6 +6,7 @@ public record BlogPublishRequest(
         String title,
         String coverImage,
         String content,
-        List<String> imageObjectKeys
+        List<String> imageObjectKeys,
+        Long shopId
 ) {
 }
