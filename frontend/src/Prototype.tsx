@@ -80,10 +80,11 @@ async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000
     }
     if (response.status === 204) return undefined as T;
     const text = await response.text();
-    let payload: Result<T> | { message?: string } | null = null;
+    let payload: Result<T> | { message?: string; detail?: unknown } | null = null;
     try { payload = text ? JSON.parse(text) : null; } catch { /* Report a readable protocol error below. */ }
     if (!response.ok) {
-      const message = payload && 'errorMsg' in payload ? payload.errorMsg : null;
+      const message = payload && 'errorMsg' in payload ? payload.errorMsg
+        : payload && 'detail' in payload && typeof payload.detail === 'string' ? payload.detail : null;
       throw new ApiError(message || (response.status >= 500 ? '服务暂时不可用，请稍后重试' : `请求失败（${response.status}）`), response.status);
     }
     if (!payload || !('success' in payload)) throw new ApiError('接口响应格式不正确，请检查服务配置', response.status);
@@ -2099,6 +2100,102 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
   </>;
 }
 
+type GeneratedNoteDraft = { title: string; content: string };
+
+type DraftPreview =
+  | { phase: 'loading' }
+  | { phase: 'ready'; draft: GeneratedNoteDraft }
+  | { phase: 'error'; message: string };
+
+function NoteDraftAssistant({ token, material, shopId, disabled, onLogin, onMissingMaterial, onApply }: {
+  token: string;
+  material: string;
+  shopId: number | null;
+  disabled: boolean;
+  onLogin: () => void;
+  onMissingMaterial: () => void;
+  onApply: (draft: GeneratedNoteDraft) => void;
+}) {
+  const keyboard = useKeyboard();
+  const [preview, setPreview] = useState<DraftPreview | null>(null);
+  const request = useRef<AbortController | null>(null);
+
+  useEffect(() => () => request.current?.abort(), []);
+
+  function close() {
+    request.current?.abort();
+    request.current = null;
+    setPreview(null);
+  }
+
+  async function generate() {
+    if (disabled || request.current) return;
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+      onLogin();
+      return;
+    }
+    const text = material.trim();
+    if (!text) {
+      onMissingMaterial();
+      return;
+    }
+
+    keyboard.hide();
+    const controller = new AbortController();
+    request.current = controller;
+    setPreview({ phase: 'loading' });
+    const active = () => request.current === controller && !controller.signal.aborted
+      && localStorage.getItem(TOKEN_KEY) === token;
+
+    try {
+      const result = await api<Partial<GeneratedNoteDraft> | null>('/ai/notes/draft', {
+        method: 'POST',
+        body: JSON.stringify({ material: text, ...(shopId !== null ? { shopId } : {}) }),
+        signal: controller.signal,
+      }, 35_000);
+      if (!active()) return;
+
+      const title = typeof result?.title === 'string' ? result.title.trim() : '';
+      const content = typeof result?.content === 'string' ? result.content.trim() : '';
+      if (!title || !content || title.length > 60 || content.length > 10_000) {
+        throw new Error('AI 返回的标题或正文格式不正确，请重试');
+      }
+      setPreview({ phase: 'ready', draft: { title, content } });
+    } catch (error) {
+      if (active()) setPreview({
+        phase: 'error',
+        message: error instanceof Error ? error.message : '生成草稿失败，请重试',
+      });
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }
+
+  return <>
+    <button type="button" className="outline-button note-ai-trigger" disabled={disabled || preview !== null}
+      onPointerDown={event => event.preventDefault()} onClick={() => void generate()}>AI 帮写</button>
+    <BottomSheet open={preview !== null} onOpenChange={open => { if (!open) close(); }}
+      title="AI 草稿" description="采用后会替换当前标题和正文。" snap={0.67}>
+      <div className="note-ai-sheet">
+        {preview?.phase === 'loading' && <p className="note-ai-status" role="status">正在根据你的体验生成草稿…</p>}
+        {preview?.phase === 'error' && <p className="note-ai-error" role="alert">{preview.message}</p>}
+        {preview?.phase === 'ready' && <article className="note-ai-preview">
+          <h3>{preview.draft.title}</h3>
+          <p>{preview.draft.content}</p>
+        </article>}
+        <div className="note-ai-actions">
+          <button type="button" className="outline-button" onClick={close}>返回编辑</button>
+          {preview?.phase === 'error' && <button type="button" className="coral-button" onClick={() => void generate()}>重试生成</button>}
+          {preview?.phase === 'ready' && <button type="button" className="coral-button" onClick={() => {
+            onApply(preview.draft);
+            close();
+          }}>采用草稿</button>}
+        </div>
+      </div>
+    </BottomSheet>
+  </>;
+}
+
 export default function Prototype() {
   const keyboard = useKeyboard();
   const [page, setPage] = useState<Page>('home');
@@ -2483,7 +2580,18 @@ export default function Prototype() {
           {token && (me.loading || me.error) && <RequestState loading={me.loading} error={me.error} onRetry={me.reload} />}
           <NotePhotoGrid upload={notePhotos} token={token} disabled={publishPhase === 'submitting'} onChoose={choosePhoto} />
           <label htmlFor="note-title">一句话标题</label><KeyboardInput id="note-title" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.title} disabled={publishPhase === 'submitting'} onChange={event => { setDraft({ ...draft, title: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} maxLength={60} placeholder="比如：转角遇到的那家小店" />
-          <label htmlFor="note-content">说说你的故事</label><KeyboardTextarea id="note-content" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} />
+          <div className="note-content-heading">
+            <label htmlFor="note-content">说说你的故事</label>
+            <NoteDraftAssistant key={token} token={token} material={draft.body}
+              shopId={draft.shop?.id ?? null} disabled={publishPhase === 'submitting'}
+              onLogin={() => openLogin('publish')} onMissingMaterial={() => flash('先写几条真实体验，再用 AI 帮写')}
+              onApply={suggestion => {
+                setDraft(previous => ({ ...previous, title: suggestion.title, body: suggestion.content }));
+                if (publishPhase !== 'uncertain') setPublishError('');
+              }}
+            />
+          </div>
+          <KeyboardTextarea id="note-content" onBlur={event => { if (!(event.relatedTarget instanceof HTMLInputElement || event.relatedTarget instanceof HTMLTextAreaElement)) keyboard.hide(); }} value={draft.body} disabled={publishPhase === 'submitting'} maxLength={10000} onChange={event => { setDraft({ ...draft, body: event.target.value }); if (publishPhase !== 'uncertain') setPublishError(''); }} placeholder="今天发生了什么好事？" rows={5} />
           <small className="draft-counter">{draft.body.length} / 10000</small>
           <div className="note-shop-field">
             <button type="button" className="note-shop-select" disabled={publishPhase === 'submitting'}

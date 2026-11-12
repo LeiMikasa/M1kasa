@@ -659,3 +659,21 @@
 .detail-body .story-shop-tag { display:inline-flex; max-width:100%; align-items:center; gap:7px; padding:7px 10px; margin-top:13px; border:1px solid var(--line); border-radius:16px; color:var(--coral); font-size:12px; text-align:left; }
 .story-shop-tag > span { min-width:0; overflow-wrap:anywhere; }
 .detail-body .story-shop-tag-error { color:var(--muted); }
+
+.note-content-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:22px; }
+.publish-body .note-content-heading > label { margin:0; }
+.note-content-heading > .note-ai-trigger { min-height:34px; }
+.bottom-sheet:has(.note-ai-sheet) { --coral:#fa827a; background:#241c20; color:#fbede7; font-family:'Noto Sans SC','Microsoft YaHei',sans-serif; }
+.bottom-sheet:has(.note-ai-sheet) .sheet-handle { background:#70565e; }
+.bottom-sheet:has(.note-ai-sheet) .sheet-content { padding:0 22px calc(22px + var(--mobile-safe-area-height, 0px)); }
+.note-ai-preview { padding:15px; border:1px solid #4a383d; border-radius:12px; background:#30252a; }
+.note-ai-preview h3 { margin:0 0 8px; font-size:16px; line-height:1.5; overflow-wrap:anywhere; }
+.note-ai-preview p,.note-ai-status,.note-ai-error { margin:0; font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+.note-ai-preview p { white-space:pre-wrap; color:#e2d1cd; }
+.note-ai-status { color:#cbb8b5; }
+.note-ai-error { color:#ffb1a6; }
+.note-ai-actions { display:flex; align-items:center; gap:10px; margin-top:16px; }
+.note-ai-actions button { min-height:42px; cursor:pointer; }
+.note-ai-actions .outline-button { background:transparent; }
+.bottom-sheet:has(.note-ai-sheet) .sheet-description { color:#bfaeaa; font-size:11px; }
+.note-ai-actions .coral-button { flex:1; min-width:0; }

@@ -21,6 +21,7 @@ public class CorsConfig {
         config.setAllowedOrigins(List.of(
                 "http://localhost:5173",
                 "http://127.0.0.1:5173"
+//                "http://127.0.0.1:8090"
         ));
         //允许的请求方法
         config.setAllowedMethods(List.of(
