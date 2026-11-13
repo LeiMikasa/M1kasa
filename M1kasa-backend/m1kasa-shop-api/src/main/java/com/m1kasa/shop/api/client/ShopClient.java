@@ -2,6 +2,7 @@ package com.m1kasa.shop.api.client;
 
 import com.m1kasa.common.dto.Result;
 import com.m1kasa.shop.api.ShopDTO;
+import com.m1kasa.shop.api.ShopTypeDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,4 +28,15 @@ public interface ShopClient {
     );
     @GetMapping("/shop/{id}")
     Result<ShopDTO> getById(@PathVariable("id") Long id);
+
+    @GetMapping("/shop/of/type")
+    Result<List<ShopDTO>> findNearbyByType(
+            @RequestParam("typeId") long typeId,
+            @RequestParam("current") long current,
+            @RequestParam("x") double x,
+            @RequestParam("y") double y
+    );
+
+    @GetMapping("/shop-type/list")
+    Result<List<ShopTypeDTO>> listShopTypes();
 }

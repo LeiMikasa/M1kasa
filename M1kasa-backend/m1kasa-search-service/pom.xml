@@ -27,6 +27,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-search-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- 提供 Elasticsearch Java 客户端及其自动配置 -->
         <dependency>

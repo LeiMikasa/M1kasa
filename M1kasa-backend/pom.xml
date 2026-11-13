@@ -13,6 +13,7 @@
     <version>0.0.1-SNAPSHOT</version>
     <packaging>pom</packaging>
     <modules>
+        <module>m1kasa-agent-service</module>
         <module>m1kasa-common-base</module>
         <module>m1kasa-shop-api</module>
         <module>m1kasa-shop-service</module>
@@ -30,6 +31,7 @@
         <module>m1kasa-pay-service</module>
         <module>m1kasa-pay-api</module>
         <module>m1kasa-search-service</module>
+        <module>m1kasa-search-api</module>
     </modules>
 
     <properties>
