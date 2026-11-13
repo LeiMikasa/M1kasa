@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasasearchservice.config;
 
+import com.m1kasa.m1kasasearchservice.mq.BlogCommentSearchConsumer;
 import com.m1kasa.shop.api.constant.ShopSearchMqConstants;
 import org.springframework.amqp.core.*;
 import org.springframework.amqp.rabbit.retry.MessageRecoverer;
@@ -41,6 +42,17 @@ public class RabbitMessageConfig {
                 .to(exchange)
                 .with(ShopSearchMqConstants.DEAD_LETTER_ROUTING_KEY);
 
+        return new Declarables(exchange, queue, binding);
+    }
+/*
+* 评论同步es死信消息
+* */
+    @Bean
+    public Declarables blogCommentSearchDeadLetterTopology() {
+        DirectExchange exchange = new DirectExchange(BlogCommentSearchConsumer.DLX);
+        Queue queue = QueueBuilder.durable(BlogCommentSearchConsumer.DLQ).build();
+        Binding binding = BindingBuilder.bind(queue).to(exchange)
+                .with(BlogCommentSearchConsumer.DLQ_ROUTING_KEY);
         return new Declarables(exchange, queue, binding);
     }
 }

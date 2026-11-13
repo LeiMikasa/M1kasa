@@ -27,6 +27,11 @@
             <artifactId>m1kasa-shop-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.xuxueli</groupId>
+            <artifactId>xxl-job-core</artifactId>
+            <version>3.4.2</version>
+        </dependency>
 
         <!-- 向用户服务发送 HTTP 请求 -->
         <dependency>

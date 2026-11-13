@@ -8,6 +8,7 @@ import com.m1kasa.content.api.BlogCommentPageDTO;
 import com.m1kasa.m1kasacontentservice.entity.Blog;
 import com.m1kasa.m1kasacontentservice.entity.BlogComment;
 import com.m1kasa.m1kasacontentservice.mapper.BlogCommentMapper;
+import com.m1kasa.m1kasacontentservice.mapper.BlogCommentSearchOutboxMapper;
 import com.m1kasa.m1kasacontentservice.mapper.BlogMapper;
 import com.m1kasa.m1kasacontentservice.service.BlogCommentService;
 import com.m1kasa.user.api.UserDTO;
@@ -29,10 +30,12 @@ public class BlogCommentServiceImpl implements BlogCommentService {
     private final BlogMapper blogMapper;
     private final BlogCommentMapper commentMapper;
     private final UserClient userClient;
-    public BlogCommentServiceImpl(BlogMapper blogMapper, BlogCommentMapper commentMapper, UserClient userClient) {
+    private final BlogCommentSearchOutboxMapper searchOutboxMapper;
+    public BlogCommentServiceImpl(BlogMapper blogMapper, BlogCommentMapper commentMapper, UserClient userClient, BlogCommentSearchOutboxMapper searchOutboxMapper) {
         this.blogMapper = blogMapper;
         this.commentMapper = commentMapper;
         this.userClient = userClient;
+        this.searchOutboxMapper = searchOutboxMapper;
     }
 
     @Override
@@ -103,6 +106,9 @@ public class BlogCommentServiceImpl implements BlogCommentService {
         comment.setReplyToCommentId(replyToCommentId);
         if (commentMapper.insert(comment) != 1 || comment.getId() == null) {
             throw new IllegalStateException("保存评论失败");
+        }
+        if (parentId == 0L) {
+            searchOutboxMapper.enqueue(comment.getId());
         }
 
         return comment.getId();
