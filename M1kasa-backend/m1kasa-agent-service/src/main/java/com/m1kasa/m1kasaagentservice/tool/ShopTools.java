@@ -127,7 +127,7 @@ public class ShopTools {
         Double x=(Double) context.getContext().get("longitude");
         Double y=(Double) context.getContext().get("latitude");
         if (x==null||y==null){
-            return "请先提供当前问题";
+            return "当前没有用户位置，请用户提供或授权定位。";
         }
         if (!(Math.abs(x) <= 180 && Math.abs(y) <= 85.05112878)) {
             return "当前位置超出附近查询支持的范围。";

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeftIcon, CameraIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, ChatBubbleIcon, Cross2Icon, DrawingPinIcon as MapPinIcon, HeartFilledIcon, HeartIcon, HomeIcon, MagnifyingGlassIcon, PaperPlaneIcon, PersonIcon, Pencil1Icon, PlusIcon, StarFilledIcon } from '@radix-ui/react-icons';
-import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useMobileDevice } from './mobile';
+import { BottomSheet, Carousel, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useKeyboardInsets, useMobileDevice } from './mobile';
 import './prototype.css';
 
-type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome' | 'commonFollowing' | 'pickNoteShop';
+type Page = 'home' | 'nearby' | 'publish' | 'messages' | 'profile' | 'story' | 'shop' | 'search' | 'checkout' | 'login' | 'myNotes' | 'following' | 'followers' | 'editProfile' | 'userHome' | 'commonFollowing' | 'pickNoteShop' | 'agentChat';
 type StoryReturn = 'home' | 'myNotes' | 'userHome';
 type CommonFollowingTarget = { userId: string; nickName: string };
 type CommonFollowingPerson = { userId: string; nickName: string; icon: string | null };
@@ -98,6 +98,101 @@ async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000
     options.signal?.removeEventListener('abort', cancel);
   }
 }
+
+type AgentChatInput = {
+  conversationId: string;
+  message: string;
+  longitude?: number;
+  latitude?: number;
+};
+
+async function streamAgentChat(
+  input: AgentChatInput,
+  token: string,
+  signal: AbortSignal,
+  onDelta: (text: string) => void,
+) {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/agent/chat/stream`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(input),
+      signal,
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new ApiError('无法连接聊天服务，请确认网关已启动', 0);
+  }
+
+  if (response.status === 401) {
+    if (localStorage.getItem(TOKEN_KEY) === token) {
+      localStorage.removeItem(TOKEN_KEY);
+      window.dispatchEvent(new Event(AUTH_EVENT));
+    }
+    throw new ApiError('登录已过期，请重新登录', 401);
+  }
+  if (!response.ok) {
+    throw new ApiError('聊天服务暂时不可用，请稍后再试', response.status);
+  }
+  if (!response.body || response.headers.get('content-type')?.split(';')[0].trim() !== 'text/event-stream') {
+    throw new ApiError('聊天接口响应格式不正确', response.status);
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  let eventName = '';
+  let dataLines: string[] = [];
+
+  try {
+    for (;;) {
+      const read = await reader.read();
+      buffer += read.value ?? '';
+
+      // Network chunks can split a line, a CRLF pair, or an entire event.
+      let lineEnd = buffer.search(/[\r\n]/);
+      while (lineEnd !== -1) {
+        const isCR = buffer[lineEnd] === '\r';
+        if (isCR && lineEnd === buffer.length - 1 && !read.done) break;
+        const line = buffer.slice(0, lineEnd);
+        const lineLength = isCR && buffer[lineEnd + 1] === '\n' ? 2 : 1;
+        buffer = buffer.slice(lineEnd + lineLength);
+
+        if (line === '') {
+          if (dataLines.length > 0) {
+            const data = dataLines.join('\n');
+            if (eventName === 'delta') onDelta(data);
+            if (eventName === 'done') return;
+            if (eventName === 'error') {
+              throw new ApiError(data || '生成失败，请稍后再试', response.status);
+            }
+          }
+          eventName = '';
+          dataLines = [];
+        } else {
+          const separator = line.indexOf(':');
+          const field = separator === -1 ? line : line.slice(0, separator);
+          let value = separator === -1 ? '' : line.slice(separator + 1);
+          if (value.startsWith(' ')) value = value.slice(1);
+          if (field === 'event') eventName = value;
+          if (field === 'data') dataLines.push(value);
+        }
+
+        lineEnd = buffer.search(/[\r\n]/);
+      }
+      if (read.done) throw new ApiError('回复中断了，请再试一次', response.status);
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+
 
 const emptyPhotoUpload = (): PhotoUploadState => ({ preview: '', uploaded: null, phase: 'idle', error: '', retryable: false, previewUnavailable: false });
 
@@ -2196,6 +2291,164 @@ function NoteDraftAssistant({ token, material, shopId, disabled, onLogin, onMiss
   </>;
 }
 
+type AgentChatTurn = { id: number; question: string; answer: string; error?: string };
+
+function AgentChat({ token, position, locating, locationError, onLocate, onClearLocation, onBack, onLogin }: {
+  token: string;
+  position: { x: number; y: number } | null;
+  locating: boolean;
+  locationError: string;
+  onLocate: () => void;
+  onClearLocation: () => void;
+  onBack: () => void;
+  onLogin: () => void;
+}) {
+  const keyboard = useKeyboard();
+  const { bottomInset } = useKeyboardInsets();
+  const [turns, setTurns] = useState<AgentChatTurn[]>([]);
+  const [draft, setDraft] = useState('');
+  const [pending, setPending] = useState(false);
+  const conversationId = useRef('');
+  const nextTurnId = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const tail = useRef<HTMLDivElement>(null);
+  const followTail = useRef(true);
+
+  useEffect(() => () => activeRequest.current?.abort(), []);
+
+  useLayoutEffect(() => {
+    const scroller = tail.current?.closest('.mobile-scroll');
+    if (scroller && followTail.current) scroller.scrollTop = scroller.scrollHeight;
+  }, [turns, pending, bottomInset]);
+
+  function newConversation() {
+    keyboard.hide();
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    conversationId.current = '';
+    followTail.current = true;
+    setPending(false);
+    setTurns([]);
+    setDraft('');
+  }
+
+  async function submit(question: string) {
+    const message = question.trim();
+    if (!message || activeRequest.current) return;
+    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+      onLogin();
+      return;
+    }
+
+    const controller = new AbortController();
+    const id = ++nextTurnId.current;
+    const active = () => activeRequest.current === controller
+      && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    activeRequest.current = controller;
+    if (!conversationId.current) {
+      conversationId.current = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    followTail.current = true;
+    keyboard.hide();
+    setDraft('');
+    setPending(true);
+    setTurns(previous => [...previous, { id, question: message, answer: '' }]);
+
+    try {
+      await streamAgentChat({
+        conversationId: conversationId.current,
+        message,
+        ...(position ? { longitude: position.x, latitude: position.y } : {}),
+      }, token, controller.signal, text => {
+        if (active()) {
+          setTurns(previous => previous.map(turn => turn.id === id
+            ? { ...turn, answer: turn.answer + text }
+            : turn));
+        }
+      });
+    } catch (error) {
+      if (active()) {
+        const message = error instanceof ApiError ? error.message : '回复中断了，请再试一次';
+        setTurns(previous => previous.map(turn => turn.id === id ? { ...turn, error: message } : turn));
+      }
+    } finally {
+      if (activeRequest.current === controller && !controller.signal.aborted) {
+        activeRequest.current = null;
+        setPending(false);
+      }
+    }
+  }
+
+  return <>
+    <header className="page-header agent-chat-header">
+      <button type="button" aria-label="返回首页" onClick={onBack}><ArrowLeftIcon /></button>
+      <h1>找店助手</h1>
+      <button type="button" className="agent-chat-new" disabled={!turns.length && !draft}
+        onClick={newConversation}><PlusIcon aria-hidden="true" />新对话</button>
+    </header>
+    {token && <div className="agent-chat-location">
+      <div className="agent-chat-location-actions">
+        <button type="button" className="location-chip" onClick={onLocate} disabled={locating}>
+          <MapPinIcon aria-hidden="true" />
+          {locating ? '正在获取位置…' : position ? '已使用当前位置' : '使用当前位置'}
+        </button>
+        {position && <button type="button" className="text-button" onClick={onClearLocation} disabled={locating}>取消定位</button>}
+      </div>
+      {locationError && <p className="location-error" role="alert">{locationError}</p>}
+    </div>}
+    <div className="agent-chat-body" style={{ marginBottom: token ? bottomInset + 64 : bottomInset }}
+      onScrollCapture={event => {
+        const scroller = event.target;
+        if (scroller instanceof HTMLElement && scroller.classList.contains('mobile-scroll')) {
+          followTail.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 72;
+        }
+      }}>
+      <MobileScroll className="m1-scroll agent-chat-scroll">
+        {!token ? <div className="agent-chat-welcome">
+          <span className="agent-chat-mark"><ChatBubbleIcon aria-hidden="true" /></span>
+          <h2>登录后聊聊想去哪</h2>
+          <button type="button" className="primary-button" onClick={onLogin}>登录</button>
+        </div> : turns.length === 0 ? <div className="agent-chat-welcome">
+          <span className="agent-chat-mark"><ChatBubbleIcon aria-hidden="true" /></span>
+          <h2>今天想去哪家店？</h2>
+          <p>问问店铺的地址、口味或环境。</p>
+          <button type="button" className="agent-chat-suggestion" onClick={() => void submit('12 号店铺叫什么？')}>
+            12 号店铺叫什么？<ChevronRightIcon aria-hidden="true" />
+          </button>
+        </div> : <div className="agent-chat-turns" aria-label="对话消息">
+          {turns.map((turn, index) => <div key={turn.id} className="agent-chat-turn">
+            <p className="agent-chat-question">{turn.question}</p>
+            <div className="agent-chat-reply">
+              <span className="agent-chat-reply-mark"><ChatBubbleIcon aria-hidden="true" /></span>
+              <div className="agent-chat-reply-body">
+                {turn.answer && <p className="agent-chat-answer">{turn.answer}</p>}
+                {pending && index === turns.length - 1 && !turn.answer && <p className="agent-chat-wait" role="status">正在准备回答…</p>}
+                {turn.error && <div className="agent-chat-error">
+                  <p role="alert">{turn.error}</p>
+                  {index === turns.length - 1 && !pending && <button type="button" onClick={() => { setDraft(turn.question); }}>恢复这条问题</button>}
+                </div>}
+              </div>
+            </div>
+          </div>)}
+          <div ref={tail} />
+        </div>}
+      </MobileScroll>
+    </div>
+    {token && <form className="agent-chat-composer" style={{ bottom: bottomInset }}
+      onSubmit={event => { event.preventDefault(); void submit(draft); }}>
+      <KeyboardInput value={draft} onChange={event => setDraft(event.target.value)} maxLength={1000}
+        enterKeyHint="send" aria-label="给找店助手发消息" placeholder="问问你想去的店…" />
+      <button type="submit" aria-label="发送消息" disabled={pending || !draft.trim()}>
+        <PaperPlaneIcon aria-hidden="true" />
+      </button>
+    </form>}
+  </>;
+}
+
+
+
 export default function Prototype() {
   const keyboard = useKeyboard();
   const [page, setPage] = useState<Page>('home');
@@ -2230,6 +2483,7 @@ export default function Prototype() {
   const [shopPage, setShopPage] = useState(1);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState('');
   const [now, setNow] = useState(Date.now());
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [phone, setPhone] = useState('');
@@ -2479,12 +2733,48 @@ export default function Prototype() {
 
   function locate() {
     if (locating) return;
-    if (!navigator.geolocation) { flash('当前浏览器不支持定位，可继续按分类浏览'); return; }
+    setLocationError('');
+
+    if (!window.isSecureContext) {
+      setLocationError('请用 HTTPS 打开网页，或在本机通过 localhost 访问后再定位。');
+      return;
+    }
+    const policy = (document as Document & {
+      featurePolicy?: { allowsFeature: (feature: string) => boolean };
+    }).featurePolicy;
+    if (policy?.allowsFeature('geolocation') === false) {
+      setLocationError('当前页面的权限策略限制了定位。请用浏览器直接打开网页再试。');
+      return;
+    }
+    if (!navigator.geolocation) {
+      setLocationError('当前浏览器不支持定位。');
+      return;
+    }
+
     setLocating(true);
     navigator.geolocation.getCurrentPosition(result => {
       setPosition({ x: result.coords.longitude, y: result.coords.latitude });
-      setShopPage(1); setLocating(false); flash('已按当前位置查询附近店铺');
-    }, () => { setLocating(false); flash('未能获取位置，可继续按分类浏览店铺'); }, { timeout: 10000, maximumAge: 300000 });
+      setShopPage(1);
+      setLocating(false);
+    }, error => {
+      setLocating(false);
+      switch (error.code) {
+        case error.PERMISSION_DENIED:
+          setLocationError('定位权限被拒绝。请在浏览器的站点设置中允许位置权限，再点一次。');
+          break;
+        case error.TIMEOUT:
+          setLocationError('获取位置超时，请重试。');
+          break;
+        default:
+          setLocationError('暂时无法获取位置。请检查设备定位是否开启，再重试。');
+      }
+    }, { timeout: 10000, maximumAge: 300000 });
+  }
+
+  function clearLocation() {
+    setPosition(null);
+    setShopPage(1);
+    setLocationError('');
   }
 
   function shopCard(item: Shop) {
@@ -2503,18 +2793,20 @@ export default function Prototype() {
     {page === 'myNotes' && <header className="page-header my-notes-header"><button onClick={() => navigate('profile')} aria-label="返回我的"><ArrowLeftIcon /></button><span>我的笔记</span><button onClick={() => navigate('publish')} aria-label="写笔记"><PlusIcon /></button></header>}
     {page === 'commonFollowing' && <header className="page-header account-list-header"><button type="button" onClick={restoreJourney} aria-label="返回上一页"><ArrowLeftIcon /></button><span>共同关注</span><span /></header>}
     {relationMode && <header className="page-header account-list-header"><button onClick={() => navigate(relationsReturn)} aria-label={relationsReturn === 'userHome' ? '返回用户主页' : '返回我的'}><ArrowLeftIcon /></button><span>{relationMode === 'following' ? '我的关注' : '我的粉丝'}</span><span /></header>}
-    {page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} onOpenShop={openShop} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}${isShopSearch ? ' shop-search-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : isShopSearch ? `${page}:${debouncedQuery.trim()}:${searchPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
+    {page === 'agentChat' ? <AgentChat key={token} token={token} position={position} locating={locating} locationError={locationError} onLocate={locate} onClearLocation={clearLocation} onBack={() => navigate('home')} onLogin={() => openLogin('agentChat')} /> : page === 'editProfile' ? <EditProfile key={token} token={token} onBack={() => finishEditing(false)} onLogin={() => openLogin('editProfile')} onSaved={() => finishEditing(true)} /> : page === 'userHome' && selectedUserId ? <UserHome key={selectedUserId} userId={selectedUserId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} current={userNotesPage} onPageChange={setUserNotesPage} onIdentityRetry={me.reload} onBack={backFromUserHome} onLogin={() => openLogin('userHome')} onEdit={editOwnHome} onRelations={mode => openFollowPeople(mode, 'userHome')} onCommonFollowing={openCommonFollowing} onOpenNote={id => openPublishedStory(id, 'userHome')} onNew={startNewNote} /> : page === 'story' && selectedBlogId ? <PublishedStory key={selectedBlogId} blogId={selectedBlogId} token={token} viewerId={positiveUserId(me.data?.id)} identityLoading={me.loading} identityError={me.error} onIdentityRetry={me.reload} onBack={backFromStory} onLogin={() => openLogin('story')} onNew={startNewNote} onOpenUser={openUserHome} onOpenShop={openShop} /> : <MobileScroll className={`m1-scroll${showNav ? '' : ' full-page'}${page === 'myNotes' ? ' my-notes-scroll' : ''}${relationMode || page === 'commonFollowing' ? ' account-list-scroll' : ''}${isShopSearch ? ' shop-search-scroll' : ''}`} key={page === 'commonFollowing' ? `common:${commonTarget?.userId}:${commonPage}` : isShopSearch ? `${page}:${debouncedQuery.trim()}:${searchPage}` : page === 'home' ? `home:${feedPage}` : relationMode ? `${relationMode}:${relationMode === 'following' ? followingPage : followersPage}` : page}>
       {page === 'home' && <>
         <header className="home-header"><div className="brand-lockup"><span className="brand-mark">巷里</span><span className="brand-sub">发现身边值得一去的小店</span></div><button className="icon-button header-search" aria-label="搜索店铺" onClick={() => navigate('search')}><MagnifyingGlassIcon /><span>搜附近的小店</span></button></header>
         <div className="feed-tabs" role="tablist" aria-label="内容分类">{(['推荐', '附近', '关注'] as FeedTab[]).map(item => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => { if (item === '附近') navigate('nearby'); else setTab(item); }}>{item}</button>)}</div>
         <button className="live-entry" onClick={() => navigate('nearby')}><MapPinIcon /><span><strong>去逛逛附近的小店</strong><small>发现附近小店和优惠券</small></span><ChevronRightIcon /></button>
+        <button type="button" className="live-entry" onClick={() => navigate('agentChat')}><ChatBubbleIcon /><span><strong>找店助手</strong><small>问问店铺的地址、口味或环境</small></span><ChevronRightIcon /></button>
         {lastPublished && lastPublished.token === token && <button className="live-entry recent-story-entry" onClick={() => openPublishedStory(lastPublished.id)}><CheckIcon /><span><strong>{lastPublished.title}</strong><small>刚刚发布 · 查看你的故事</small></span><ChevronRightIcon /></button>}
         {tab === '关注' ? <div className="empty-state"><span className="empty-symbol">✳</span><h2>期待下一次相遇</h2><p>关注功能正在准备中，先看看大家的最新笔记。</p><button className="primary-button" onClick={() => setTab('推荐')}>看看推荐</button></div> : <BlogFeed current={feedPage} refreshKey={lastPublished?.id || ''} onPageChange={setFeedPage} onOpenNote={id => openPublishedStory(id)} onNew={startNewNote} onOpenUser={openUserHome} />}
       </>}
 
       {page === 'nearby' && <>
         <header className="sub-header"><div><span className="eyebrow">AROUND YOU</span><h1>附近的好地方<span className="accent-dot">.</span></h1></div><button className="icon-button" onClick={() => navigate('search')} aria-label="搜索附近店铺"><MagnifyingGlassIcon /></button></header>
-        <div className="location-toolbar"><button className="location-chip" onClick={locate} disabled={locating}><MapPinIcon />{locating ? '正在定位…' : position ? '已使用当前位置' : '获取位置，看看附近'}<ChevronRightIcon /></button>{position && <button className="text-button" onClick={() => { setPosition(null); setShopPage(1); }}>取消定位</button>}</div>
+        <div className="location-toolbar"><button className="location-chip" onClick={locate} disabled={locating}><MapPinIcon />{locating ? '正在定位…' : position ? '已使用当前位置' : '获取位置，看看附近'}<ChevronRightIcon /></button>{position && <button type="button" className="text-button" onClick={clearLocation} disabled={locating}>取消定位</button>}</div>
+        {locationError && <p className="location-error nearby-location-error" role="alert">{locationError}</p>}
         <RequestState loading={types.loading} error={types.error} empty={types.data?.length === 0} onRetry={types.reload} emptyText="暂时没有店铺分类" />
         {Boolean(types.data?.length) && <Carousel ariaLabel="店铺分类" className="category-carousel" contentClassName="category-track">{types.data!.map(type => <button key={type.id} className={type.id === typeId ? 'selected' : ''} onClick={() => { setTypeId(type.id); setShopPage(1); }}>{type.name}</button>)}</Carousel>}
         <div className="live-shop-list"><RequestState loading={shops.loading} error={shops.error} empty={typeId !== null && shops.data?.length === 0} onRetry={shops.reload} emptyText={position ? '附近暂未找到这个分类的店铺，可取消定位再试试' : '这个分类暂时没有店铺'} />{shops.data?.map(shopCard)}</div>

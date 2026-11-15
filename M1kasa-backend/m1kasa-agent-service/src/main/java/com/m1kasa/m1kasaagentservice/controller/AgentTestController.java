@@ -10,6 +10,8 @@ import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -17,6 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import com.m1kasa.m1kasaagentservice.service.AgentService;
 import com.m1kasa.m1kasaagentservice.service.AgentService.AgentLoopResult;
+import reactor.core.publisher.Flux;
+
 @RestController
 public class AgentTestController {
     private final DeepSeekChatModel chatModel;
@@ -119,5 +123,36 @@ public class AgentTestController {
             @RequestParam(name = "y", required = false) Double y
     ) {
         return agentService.chat(message, x, y);
+    }
+
+    @PostMapping(
+            value = "/agent/test/stream",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public Flux<ServerSentEvent<String>> testStream(
+            @RequestParam("message") String message
+    ) {
+        DeepSeekChatOptions options = chatModel.getOptions()
+                .mutate()
+                .disableThinking()
+                .build();
+
+        Prompt prompt = new Prompt(message, options);
+
+        return chatModel.stream(prompt)
+                .<ServerSentEvent<String>>handle((response, sink) -> {
+                    Generation generation = response.getResult();
+                    if (generation == null) {
+                        return;
+                    }
+
+                    String text = generation.getOutput().getText();
+                    if (text != null && !text.isEmpty()) {
+                        sink.next(ServerSentEvent.builder(text).event("delta").build());
+                    }
+                })
+                .concatWithValues(
+                        ServerSentEvent.builder("ok").event("done").build()
+                );
     }
 }
