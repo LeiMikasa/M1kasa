@@ -7,12 +7,15 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.util.List;
+
 @Mapper
 public interface VoucherOrderMapper extends BaseMapper<VoucherOrder> {
     @Update("""
         UPDATE tb_voucher_order
         SET status = #{targetStatus},
             pay_amount_fen = COALESCE(#{payAmountFen,jdbcType=BIGINT}, pay_amount_fen),
+            pay_expire_at = DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 15 MINUTE),
             update_time = CURRENT_TIMESTAMP
         WHERE id = #{orderId}
           AND request_id = #{requestId}
@@ -34,6 +37,8 @@ public interface VoucherOrderMapper extends BaseMapper<VoucherOrder> {
         SET status = #{targetStatus},
             failure_code = #{failureCode},
             update_time = CURRENT_TIMESTAMP
+        
+
         WHERE id = #{orderId}
           AND request_id = #{requestId}
           AND voucher_id = #{voucherId}
@@ -58,5 +63,18 @@ public interface VoucherOrderMapper extends BaseMapper<VoucherOrder> {
         """)
     VoucherOrder selectByIdForUpdate(
             @Param("orderId") Long orderId
+    );
+
+    @Select("""
+    SELECT *
+    FROM tb_voucher_order
+    WHERE status = #{waitingStatus}
+      AND pay_expire_at <= CURRENT_TIMESTAMP
+    ORDER BY pay_expire_at, id
+    LIMIT #{limit}
+    """)
+    List<VoucherOrder> findExpiredWaitingPayment(
+            @Param("waitingStatus") int waitingStatus,
+            @Param("limit") int limit
     );
 }

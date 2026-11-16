@@ -39,6 +39,15 @@ public class VoucherOrder {
 
     private LocalDateTime paidTime;
 
+    private LocalDateTime payExpireAt;
+
+    public LocalDateTime getPayExpireAt() {
+        return payExpireAt;
+    }
+
+    public void setPayExpireAt(LocalDateTime payExpireAt) {
+        this.payExpireAt = payExpireAt;
+    }
     public String getPayNo() {
         return payNo;
     }

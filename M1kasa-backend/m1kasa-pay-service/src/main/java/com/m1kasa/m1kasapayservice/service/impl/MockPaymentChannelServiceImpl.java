@@ -14,6 +14,7 @@ import com.m1kasa.m1kasapayservice.service.model.PaymentSuccessResult;
 import org.springframework.context.annotation.Profile;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Objects;
 
@@ -32,6 +33,7 @@ public class MockPaymentChannelServiceImpl implements MockPaymentChannelService 
 
 
     @Override
+    @Transactional//TODO
     public MockChannelTrade confirm(String payNo, Long userId) {
         if (payNo==null||!payNo.matches("[0-9a-f]{32}")){
             throw new IllegalArgumentException("支付单号不合法");
