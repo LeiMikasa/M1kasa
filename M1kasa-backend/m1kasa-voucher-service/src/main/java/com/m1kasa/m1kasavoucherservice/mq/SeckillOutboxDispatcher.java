@@ -15,7 +15,7 @@ import java.util.concurrent.Semaphore;
 public class SeckillOutboxDispatcher {
 
     // 单实例最多允许 100 个尚未完成的投递任务
-    private static final int MAX_IN_FLIGHT = 100;
+    private static final int MAX_IN_FLIGHT = 200;
 
     private final Semaphore inFlight =
             new Semaphore(MAX_IN_FLIGHT);

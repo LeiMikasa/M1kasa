@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasagateway.filter;
 
+import com.m1kasa.common.base.auth.JwtTokenService;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -17,18 +18,21 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
+import java.util.regex.Pattern;
+import io.jsonwebtoken.JwtException;
 
 @Component
 public class AuthenticationFilter implements GlobalFilter, Ordered {
-
+    private static final Pattern LEGACY_TOKEN = Pattern.compile("[0-9a-f]{32}");
     private static final String TOKEN_PREFIX = "m1kasa:login:token:";
     private static final String USER_ID_HEADER = "X-User-Id";
-
+    private final JwtTokenService jwtTokenService;
     private final ReactiveStringRedisTemplate redisTemplate;
-    private static final Duration TOKEN_TTL=Duration.ofMinutes(30);
     public AuthenticationFilter(
-            ReactiveStringRedisTemplate redisTemplate
+            JwtTokenService jwtTokenService, ReactiveStringRedisTemplate redisTemplate
     ) {
+        this.jwtTokenService = jwtTokenService;
         this.redisTemplate = redisTemplate;
     }
 
@@ -70,46 +74,57 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
             return unauthorized(cleanExchange);
         }
         String tokenKey=TOKEN_PREFIX+token;
-        return redisTemplate.opsForValue()
-                .get(TOKEN_PREFIX + token)
-                // Redis 没查到 token，转成空字符串，统一在下面判断
-                .defaultIfEmpty("")
-                .flatMap(userId -> {
-                    if (!StringUtils.hasText(userId)) {
-                        return unauthorized(cleanExchange);
-                    }
+        if (LEGACY_TOKEN.matcher(token).matches()) {
+            return redisTemplate.opsForValue()
+                    .get(TOKEN_PREFIX + token)
+                    .defaultIfEmpty("")
+                    .flatMap(userId -> StringUtils.hasText(userId)
+                            ? forwardWithUserId(cleanExchange, chain, userId)
+                            : unauthorized(cleanExchange));
+        }
 
-                    //查到有效登录态后，将剩余有效期重置为30分钟
-                    return redisTemplate.expire(tokenKey,TOKEN_TTL)
-                            .flatMap(renewed->{
-                                //查询后，token可能刚好过期或被退出登录删除
-                                if (!Boolean.TRUE.equals(renewed)){
-                                    return unauthorized(cleanExchange);
-                                }
-                                // 用户 ID 来自 Redis，覆盖到发给下游的请求头
-                                ServerHttpRequest authenticatedRequest = cleanExchange
-                                        .getRequest()
-                                        .mutate()
-                                        .headers(headers ->
-                                                headers.set(USER_ID_HEADER, userId))
-                                        .build();
+        JwtTokenService.VerifiedToken verified;
+        try {
+            verified = jwtTokenService.verify(token);
+        } catch (JwtException | IllegalArgumentException ex) {
+            return unauthorized(cleanExchange);
+        }
+        //网关同时检查jti和jti
+        List<String> revocationKeys=verified.sessionId()==null
+                ? List.of(verified.revocationKey())
+                : List.of(
+                        verified.revocationKey(),
+                        JwtTokenService.sessionRevocationKey(verified.sessionId())
+        );
+        return redisTemplate.countExistingKeys(revocationKeys)
+                .flatMap(count -> count > 0
+                        ? unauthorized(cleanExchange)
+                        : forwardWithUserId(
+                        cleanExchange, chain, Long.toString(verified.userId())
+                ));
 
-                                ServerWebExchange authenticatedExchange = cleanExchange
-                                        .mutate()
-                                        .request(authenticatedRequest)
-                                        .build();
+    }
+    private Mono<Void> forwardWithUserId(
+            ServerWebExchange exchange,
+            GatewayFilterChain chain,
+            String userId
+    ) {
+        ServerHttpRequest authenticatedRequest = exchange.getRequest()
+                .mutate()
+                .headers(headers -> headers.set(USER_ID_HEADER, userId))
+                .build();
 
-                                return chain.filter(authenticatedExchange);
-                            });
-
-                });
+        return chain.filter(exchange.mutate()
+                .request(authenticatedRequest)
+                .build());
     }
 
     private boolean isPublicRequest(HttpMethod method, String path) {
         if (HttpMethod.POST.equals(method)) {
             return "/user/code".equals(path)
                     || "/user/login".equals(path)
-                    || "/pay/callbacks/mock".equals(path);
+                    || "/pay/callbacks/mock".equals(path)
+                    || "/user/refresh".equals(path);
         }
 
         if (HttpMethod.GET.equals(method)) {

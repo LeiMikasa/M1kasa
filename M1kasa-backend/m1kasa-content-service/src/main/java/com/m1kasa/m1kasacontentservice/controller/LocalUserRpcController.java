@@ -20,10 +20,9 @@ public class LocalUserRpcController {
 
     @GetMapping
     public Result<List<UserDTO>> query(
-        @RequestParam("ids") List<Long> ids,
-        @RequestHeader("Authorization") String authorization
+        @RequestParam("ids") List<Long> ids
     ){
           //通过Feign代理，远程调用用户服务
-          return userClient.listByIds(ids,authorization);
+          return userClient.listByIds(ids);
     }
 }

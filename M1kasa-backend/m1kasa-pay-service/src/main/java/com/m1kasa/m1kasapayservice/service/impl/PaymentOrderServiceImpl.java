@@ -38,7 +38,7 @@ public class PaymentOrderServiceImpl implements PaymentOrderService {
         //订单服务负责校验订单归属和待支付状态
         OrderPaymentInfoDTO order;
         try {
-            order = orderPaymentClient.findPayable(orderId, userId);
+            order = orderPaymentClient.findPayable(orderId);
         }catch (FeignException ex){
             //RPC期间，另一个请求可能已经创建了支付单
             existing=findOwnedPayment(orderId,userId);

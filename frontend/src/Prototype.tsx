@@ -55,8 +55,123 @@ class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
 
+// The JWT payload is used only to keep the UI on the same session after renewal.
+function readSessionId(token: string) {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const { sid } = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof sid === 'string' && sid ? sid : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameSession(left: string | null, right: string | null) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const sid = readSessionId(left);
+  return sid !== null && sid === readSessionId(right);
+}
+
+function isCurrentSession(token: string) {
+  return sameSession(token, localStorage.getItem(TOKEN_KEY));
+}
+
+function expireAccessToken(token: string) {
+  if (localStorage.getItem(TOKEN_KEY) !== token) return;
+  localStorage.removeItem(TOKEN_KEY);
+  window.dispatchEvent(new Event(AUTH_EVENT));
+}
+
+// Serialize operations that change the refresh cookie. Web Locks also covers other tabs.
+let authQueue: Promise<void> = Promise.resolve();
+function withAuthLock<T>(work: () => Promise<T>): Promise<T> {
+  const operation = authQueue.then(() => navigator.locks
+    ? navigator.locks.request('m1kasa.auth', work)
+    : work());
+  authQueue = operation.then(() => {}, () => {});
+  return operation;
+}
+
+async function rotateAccessToken(previous: string) {
+  const current = localStorage.getItem(TOKEN_KEY);
+  if (current !== previous) return sameSession(previous, current) ? current : null;
+
+  let next: string;
+  try {
+    next = await api<string>('/user/refresh', { method: 'POST', credentials: 'include' });
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 401) throw error;
+    expireAccessToken(previous);
+    return null;
+  }
+
+  if (typeof next !== 'string' || !sameSession(previous, next)) {
+    expireAccessToken(previous);
+    return null;
+  }
+  if (localStorage.getItem(TOKEN_KEY) !== previous) return null;
+  localStorage.setItem(TOKEN_KEY, next);
+  return next;
+}
+
+let pendingRefresh: { token: string; promise: Promise<string | null> } | null = null;
+function refreshAccessToken(token: string) {
+  if (pendingRefresh?.token === token) return pendingRefresh.promise;
+
+  const promise = withAuthLock(() => rotateAccessToken(token)).finally(() => {
+    if (pendingRefresh?.promise === promise) pendingRefresh = null;
+  });
+  pendingRefresh = { token, promise };
+  return promise;
+}
+
+async function fetchWithSession(
+  path: string,
+  options: RequestInit,
+  renew = refreshAccessToken,
+  expectedToken?: string,
+) {
+  const endpoint = path.split('?')[0];
+  const usesAccessToken = !['/user/login', '/user/code', '/user/refresh'].includes(endpoint);
+  let token = usesAccessToken ? localStorage.getItem(TOKEN_KEY) : null;
+  if (expectedToken && !sameSession(expectedToken, token)) {
+    throw new ApiError('登录已过期，请重新登录', 401);
+  }
+
+  const send = (accessToken: string | null) => {
+    const headers = new Headers(options.headers);
+    if (accessToken) headers.set('Authorization', 'Bearer ' + accessToken);
+    return fetch(API_BASE + path, { ...options, headers });
+  };
+
+  let response = await send(token);
+  if (response.status === 401 && token && readSessionId(token)) {
+    options.signal?.throwIfAborted();
+    const renewed = await renew(token);
+    options.signal?.throwIfAborted();
+    const latest = localStorage.getItem(TOKEN_KEY);
+    if (renewed && sameSession(renewed, latest)) {
+      token = latest;
+      response = await send(token);
+    }
+  }
+
+  if (response.status === 401) {
+    if (token) expireAccessToken(token);
+    throw new ApiError('登录已过期，请重新登录', 401);
+  }
+  return response;
+}
+
 // All business requests use the gateway; never fall back to demonstration data.
-async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000): Promise<T> {
+async function api<T>(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs = 12000,
+  renew = refreshAccessToken,
+): Promise<T> {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (options.signal?.aborted) controller.abort();
@@ -66,18 +181,8 @@ async function api<T>(path: string, options: RequestInit = {}, timeoutMs = 12000
   // The browser adds the multipart boundary when sending FormData.
   if (options.body instanceof FormData) headers.delete('Content-Type');
   else if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const token = localStorage.getItem(TOKEN_KEY);
-  if (token) headers.set('Authorization', `Bearer ${token}`);
   try {
-    const response = await fetch(`${API_BASE}${path}`, { ...options, headers, signal: controller.signal });
-    if (response.status === 401) {
-      // An old in-flight request must not clear a newer login session.
-      if (token && localStorage.getItem(TOKEN_KEY) === token) {
-        localStorage.removeItem(TOKEN_KEY);
-        window.dispatchEvent(new Event(AUTH_EVENT));
-      }
-      throw new ApiError('登录已过期，请重新登录', 401);
-    }
+    const response = await fetchWithSession(path, { ...options, headers, signal: controller.signal }, renew);
     if (response.status === 204) return undefined as T;
     const text = await response.text();
     let payload: Result<T> | { message?: string; detail?: unknown } | null = null;
@@ -114,28 +219,20 @@ async function streamAgentChat(
 ) {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/agent/chat/stream`, {
+    response = await fetchWithSession('/agent/chat/stream', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
       body: JSON.stringify(input),
       signal,
-    });
+    }, refreshAccessToken, token);
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || error instanceof ApiError) throw error;
     throw new ApiError('无法连接聊天服务，请确认网关已启动', 0);
   }
 
-  if (response.status === 401) {
-    if (localStorage.getItem(TOKEN_KEY) === token) {
-      localStorage.removeItem(TOKEN_KEY);
-      window.dispatchEvent(new Event(AUTH_EVENT));
-    }
-    throw new ApiError('登录已过期，请重新登录', 401);
-  }
   if (!response.ok) {
     throw new ApiError('聊天服务暂时不可用，请稍后再试', response.status);
   }
@@ -222,14 +319,14 @@ function usePhotoUpload(token: string, endpoint = '/blog/images', ownerId: strin
 
   async function send(file: File) {
     if (request.current) return;
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+    if (!token || !isCurrentSession(token)) {
       setPhoto(value => ({ ...value, phase: 'error', error: '请先登录后上传照片', retryable: false }));
       return;
     }
     const controller = new AbortController();
     request.current = controller;
     const run = ++sequence.current;
-    const active = () => !controller.signal.aborted && sequence.current === run && currentToken.current === token && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && sequence.current === run && currentToken.current === token && isCurrentSession(token);
     setPhoto({ preview: localPreview.current, uploaded: null, phase: 'uploading', error: '', retryable: false, previewUnavailable: false });
     const body = new FormData();
     body.append('file', file);
@@ -317,7 +414,7 @@ function useNotePhotos(token: string, ownerId: string | null) {
   }, [token, dispose]);
 
   function pump() {
-    if (!token || currentToken.current !== token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (!token || currentToken.current !== token || !isCurrentSession(token)) return;
     while (controllers.current.size < 2) {
       const photo = items.current.find(item => item.phase === 'queued');
       if (!photo) return;
@@ -331,7 +428,7 @@ function useNotePhotos(token: string, ownerId: string | null) {
 
   async function send(photo: NotePhoto, controller: AbortController, run: number) {
     const active = () => !controller.signal.aborted && epoch.current === run && currentToken.current === token
-      && localStorage.getItem(TOKEN_KEY) === token && controllers.current.get(photo.id) === controller;
+      && isCurrentSession(token) && controllers.current.get(photo.id) === controller;
     const body = new FormData();
     body.append('file', photo.file);
     try {
@@ -361,7 +458,7 @@ function useNotePhotos(token: string, ownerId: string | null) {
 
   function add(files: File[]) {
     if (!files.length) return;
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token || !ownerId) { reject('请先确认登录状态后添加图片'); return; }
+    if (!token || !isCurrentSession(token) || !ownerId) { reject('请先确认登录状态后添加图片'); return; }
     if (files.length + items.current.length > MAX_NOTE_PHOTOS) { reject('每篇笔记最多 9 张图片，还可以添加 ' + (MAX_NOTE_PHOTOS - items.current.length) + ' 张'); return; }
     const seen = new Set(items.current.map(photo => photo.fingerprint));
     const fingerprints: string[] = [];
@@ -611,14 +708,14 @@ function OrderPayment({ order, voucher, token, userId, onOrderUpdated }: {
   }, []);
 
   const pollOrder = useCallback(() => {
-    if (!mounted.current || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (!mounted.current || !isCurrentSession(token)) return;
     stopPolling();
     const controller = new AbortController();
     queryAbort.current = controller;
     const sequence = querySequence.current;
     const startedAt = Date.now();
     const current = () => mounted.current && !controller.signal.aborted
-      && querySequence.current === sequence && localStorage.getItem(TOKEN_KEY) === token;
+      && querySequence.current === sequence && isCurrentSession(token);
     setChecking(true); setPhase('confirming');
 
     const read = async (number: number) => {
@@ -667,12 +764,12 @@ function OrderPayment({ order, voucher, token, userId, onOrderUpdated }: {
 
   async function preparePayment() {
     keyboard.hide(); setOpen(true);
-    if (busy.current || latestOrder.current.status !== 1 || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (busy.current || latestOrder.current.status !== 1 || !isCurrentSession(token)) return;
     busy.current = true;
     stopPolling(); setChecking(false); setPhase('creating'); setError(''); setPayment(null);
     const controller = new AbortController();
     actionAbort.current = controller;
-    const current = () => mounted.current && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const current = () => mounted.current && !controller.signal.aborted && isCurrentSession(token);
     try {
       const result = await api<PaymentOrder>('/pay/orders', {
         method: 'POST', body: JSON.stringify({ orderId: order.id }), signal: controller.signal
@@ -702,11 +799,11 @@ function OrderPayment({ order, voucher, token, userId, onOrderUpdated }: {
 
   async function confirmPayment() {
     if (!payment || payment.status !== 0 || phase !== 'ready' || busy.current
-      || latestOrder.current.status !== 1 || localStorage.getItem(TOKEN_KEY) !== token) return;
+      || latestOrder.current.status !== 1 || !isCurrentSession(token)) return;
     busy.current = true;
     const controller = new AbortController();
     actionAbort.current = controller;
-    const current = () => mounted.current && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const current = () => mounted.current && !controller.signal.aborted && isCurrentSession(token);
     const marker: PaymentMarker = { payNo: payment.payNo, phase: 'submitted', attemptId: paymentAttemptId() };
     // Persist before POST: navigation or a timeout cannot prove that the channel did not receive it.
     paymentMarker(markerKey, marker); setAttempt(marker); setPhase('submitting'); setError('');
@@ -818,7 +915,7 @@ function SeckillPurchase({ voucher, token, userId, now, identityLoading, identit
     lookupAbort.current = controller;
     const runId = ++lookupRun.current;
     const startedAt = Date.now();
-    const current = () => mounted.current && !controller.signal.aborted && lookupRun.current === runId && localStorage.getItem(TOKEN_KEY) === token;
+    const current = () => mounted.current && !controller.signal.aborted && lookupRun.current === runId && isCurrentSession(token);
     setPolling(follow); setLookupError(''); setLookupNote('');
 
     const read = async (attempt: number) => {
@@ -868,14 +965,14 @@ function SeckillPurchase({ voucher, token, userId, now, identityLoading, identit
 
   async function reserve(explicitRetry = false) {
     if (!token) { onLogin(); return; }
-    if (localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (!isCurrentSession(token)) return;
     const retryAllowed = explicitRetry && (phase === 'accepted' || phase === 'uncertain') && !polling && !querying && !lookupError;
     if (!userId || !checked || submitting.current || order || (phase !== 'ready' && !retryAllowed) || voucherState(voucher, Date.now()) !== '进行中' || soldOut) return;
     submitting.current = true;
     const controller = new AbortController();
     submitAbort.current = controller;
     const attemptId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const current = () => mounted.current && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const current = () => mounted.current && !controller.signal.aborted && isCurrentSession(token);
     setPhase('submitting'); setReserveError(''); setLookupNote('');
     // A navigation/timeout cannot prove that the server did not accept the POST.
     reservationMarker(markerKey, { phase: 'uncertain', attemptId });
@@ -976,10 +1073,10 @@ function useBlogLike(blogId: string, token: string) {
   const path = `/blog/${encodeURIComponent(blogId)}/like`;
 
   const reload = useCallback(async () => {
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    if (!token || !isCurrentSession(token) || request.current) return;
     const controller = new AbortController();
     request.current = controller;
-    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && current.current === identity && isCurrentSession(token);
     setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyBlogLike(identity)), phase: 'loading', message: '' }));
     try {
       const result = await api<BlogLike>(path, { signal: controller.signal });
@@ -1006,10 +1103,10 @@ function useBlogLike(blogId: string, token: string) {
   }, [identity, reload, token]);
 
   async function setLiked(liked: boolean) {
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    if (!token || !isCurrentSession(token) || request.current) return;
     const controller = new AbortController();
     request.current = controller;
-    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && current.current === identity && isCurrentSession(token);
     setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyBlogLike(identity)), phase: 'saving', error: '', message: liked ? '正在点赞…' : '正在取消点赞…' }));
     try {
       const result = await api<BlogLike>(path, { method: 'PUT', body: JSON.stringify({ liked }), signal: controller.signal });
@@ -1086,10 +1183,10 @@ function useAuthorFollow(targetUserId: string | null, token: string, enabled: bo
   const path = targetUserId ? `/user/${encodeURIComponent(targetUserId)}/follow` : null;
 
   const reload = useCallback(async () => {
-    if (!enabled || !path || !targetUserId || !token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    if (!enabled || !path || !targetUserId || !token || !isCurrentSession(token) || request.current) return;
     const controller = new AbortController();
     request.current = controller;
-    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && current.current === identity && isCurrentSession(token);
     setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyAuthorFollow(identity)), phase: 'loading', error: '', message: '' }));
     try {
       const result = await api<AuthorFollow>(path, { signal: controller.signal });
@@ -1119,10 +1216,10 @@ function useAuthorFollow(targetUserId: string | null, token: string, enabled: bo
   }, [enabled, identity, initialFollowed, reload, targetUserId]);
 
   async function setFollowed(followed: boolean) {
-    if (!enabled || !path || !targetUserId || !token || localStorage.getItem(TOKEN_KEY) !== token || request.current) return;
+    if (!enabled || !path || !targetUserId || !token || !isCurrentSession(token) || request.current) return;
     const controller = new AbortController();
     request.current = controller;
-    const active = () => !controller.signal.aborted && current.current === identity && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && current.current === identity && isCurrentSession(token);
     setSaved(previous => ({ ...(previous.identity === identity ? previous : emptyAuthorFollow(identity)), phase: 'saving', error: '', message: followed ? '正在关注…' : '正在取消关注…' }));
     try {
       const result = await api<AuthorFollow>(path, { method: 'PUT', body: JSON.stringify({ followed }), signal: controller.signal });
@@ -1385,7 +1482,7 @@ function StoryComments({ blogId, token, viewerId, onLogin, onOpenUser, onCountCh
   }
 
   async function changeComment(next: CommentAction) {
-    if (busy || mutation.current || !token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (busy || mutation.current || !token || !isCurrentSession(token)) return;
     const commentId = next.kind === 'delete' ? next.comment.id : next.target?.id;
     const content = next.kind === 'post' ? next.draft.trim() : '';
     if (next.kind === 'post' && (!content || Array.from(content).length > 500)) {
@@ -1407,7 +1504,7 @@ function StoryComments({ blogId, token, viewerId, onLogin, onOpenUser, onCountCh
         await api<string>(path, { method: 'POST', body: JSON.stringify(body), signal: controller.signal });
       }
 
-      if (controller.signal.aborted || localStorage.getItem(TOKEN_KEY) !== token) return;
+      if (controller.signal.aborted || !isCurrentSession(token)) return;
       onCountChange(next.kind === 'delete' ? -1 : 1);
 
       if (next.kind === 'delete') {
@@ -2093,7 +2190,7 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
   async function save(retry = false) {
     keyboard.hide();
     if (request.current || uploading) return;
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (!token || !isCurrentSession(token)) return;
     if (nameError) { setError(nameError); return; }
     if (!ready) { setError('请完成头像上传，或选择使用原头像'); return; }
     const desired: ProfileUpdate = retry && pending.current ? pending.current : {
@@ -2105,7 +2202,7 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
     pending.current = desired;
     setPhase('saving');
     setError('');
-    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && isCurrentSession(token);
     try {
       await api<void>('/user/me', { method: 'PUT', body: JSON.stringify(desired), signal: controller.signal });
       if (active()) onSaved();
@@ -2122,13 +2219,13 @@ function ProfileForm({ user, token, onBack, onSaved }: { user: User; token: stri
 
   async function checkSaved() {
     keyboard.hide();
-    if (request.current || !pending.current || localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (request.current || !pending.current || !isCurrentSession(token)) return;
     const desired = pending.current;
     const controller = new AbortController();
     request.current = controller;
     setPhase('checking');
     setError('');
-    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && isCurrentSession(token);
     try {
       const fresh = await api<User>('/user/me', { signal: controller.signal });
       if (!active()) return;
@@ -2225,7 +2322,7 @@ function NoteDraftAssistant({ token, material, shopId, disabled, onLogin, onMiss
 
   async function generate() {
     if (disabled || request.current) return;
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+    if (!token || !isCurrentSession(token)) {
       onLogin();
       return;
     }
@@ -2240,7 +2337,7 @@ function NoteDraftAssistant({ token, material, shopId, disabled, onLogin, onMiss
     request.current = controller;
     setPreview({ phase: 'loading' });
     const active = () => request.current === controller && !controller.signal.aborted
-      && localStorage.getItem(TOKEN_KEY) === token;
+      && isCurrentSession(token);
 
     try {
       const result = await api<Partial<GeneratedNoteDraft> | null>('/ai/notes/draft', {
@@ -2335,7 +2432,7 @@ function AgentChat({ token, position, locating, locationError, onLocate, onClear
   async function submit(question: string) {
     const message = question.trim();
     if (!message || activeRequest.current) return;
-    if (!token || localStorage.getItem(TOKEN_KEY) !== token) {
+    if (!token || !isCurrentSession(token)) {
       onLogin();
       return;
     }
@@ -2343,7 +2440,7 @@ function AgentChat({ token, position, locating, locationError, onLocate, onClear
     const controller = new AbortController();
     const id = ++nextTurnId.current;
     const active = () => activeRequest.current === controller
-      && !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+      && !controller.signal.aborted && isCurrentSession(token);
     activeRequest.current = controller;
     if (!conversationId.current) {
       conversationId.current = typeof crypto.randomUUID === 'function'
@@ -2622,7 +2719,11 @@ export default function Prototype() {
   }, [types.data, typeId]);
   useEffect(() => {
     const expired = () => { setToken(''); flash('登录已过期，请重新登录'); };
-    const storage = (event: StorageEvent) => { if (event.key === TOKEN_KEY) setToken(event.newValue || ''); };
+    const storage = (event: StorageEvent) => {
+      if (event.key !== TOKEN_KEY && event.key !== null) return;
+      const latest = localStorage.getItem(TOKEN_KEY) || '';
+      setToken(previous => sameSession(previous, latest) ? previous : latest);
+    };
     window.addEventListener(AUTH_EVENT, expired);
     window.addEventListener('storage', storage);
     return () => { window.removeEventListener(AUTH_EVENT, expired); window.removeEventListener('storage', storage); };
@@ -2645,7 +2746,7 @@ export default function Prototype() {
   async function publishStory(allowUncertainRetry = false) {
     if (publishRequest.current || (publishPhase === 'uncertain' && !allowUncertainRetry)) return;
     if (!token) { openLogin('publish'); return; }
-    if (localStorage.getItem(TOKEN_KEY) !== token) return;
+    if (!isCurrentSession(token)) return;
     const title = draft.title.trim();
     const content = draft.body.trim();
     const imageKeys = notePhotos.photos.map(photo => photo.uploaded?.objectKey);
@@ -2656,7 +2757,7 @@ export default function Prototype() {
     keyboard.hide();
     const controller = new AbortController();
     publishRequest.current = controller;
-    const active = () => !controller.signal.aborted && localStorage.getItem(TOKEN_KEY) === token;
+    const active = () => !controller.signal.aborted && isCurrentSession(token);
     setPublishPhase('submitting');
     setPublishError('');
     try {
@@ -2707,16 +2808,22 @@ export default function Prototype() {
     if (!/^1[3-9]\d{9}$/.test(phone) || !/^\d{6}$/.test(code)) { setLoginError('请输入正确的手机号和六位验证码'); return; }
     keyboard.hide(); setLoggingIn(true); setLoginError('');
     const attempt = ++loginAttempt.current;
-    let issuedToken = '';
     try {
-      issuedToken = await api<string>('/user/login', { method: 'POST', body: JSON.stringify({ phone, code }) });
-      if (typeof issuedToken !== 'string' || !issuedToken) throw new Error('登录接口没有返回有效 token');
-      if (attempt !== loginAttempt.current) return;
-      localStorage.setItem(TOKEN_KEY, issuedToken);
-      setToken(issuedToken);
-      setCode('');
-      navigate(loginReturn);
-      flash('登录成功');
+      await withAuthLock(async () => {
+        if (attempt !== loginAttempt.current) return;
+        const issuedToken = await api<string>('/user/login', {
+          method: 'POST',
+          credentials: 'include',
+          body: JSON.stringify({ phone, code }),
+        });
+        if (typeof issuedToken !== 'string' || !issuedToken) throw new Error('登录接口没有返回有效 token');
+        localStorage.setItem(TOKEN_KEY, issuedToken);
+        setToken(issuedToken);
+        if (attempt !== loginAttempt.current) return;
+        setCode('');
+        navigate(loginReturn);
+        flash('登录成功');
+      });
     } catch (error) { if (attempt === loginAttempt.current) setLoginError((error as Error).message); }
     finally { if (attempt === loginAttempt.current) setLoggingIn(false); }
   }
@@ -2725,9 +2832,16 @@ export default function Prototype() {
     if (loggingOut) return;
     setLoggingOut(true);
     try {
-      await api<void>('/user/logout', { method: 'POST' });
-      localStorage.removeItem(TOKEN_KEY); setToken(''); flash('已退出登录');
-    } catch (error) { flash((error as Error).message); }
+      await withAuthLock(async () => {
+        if (!token || !isCurrentSession(token)) return;
+        // The cookie lock is already held, so renewal runs inside it.
+        await api<void>('/user/logout', { method: 'POST', credentials: 'include' }, 12000, rotateAccessToken);
+        if (!isCurrentSession(token)) return;
+        localStorage.removeItem(TOKEN_KEY);
+        setToken('');
+        flash('已退出登录');
+      });
+    } catch (error) { if (isCurrentSession(token)) flash((error as Error).message); }
     finally { setLoggingOut(false); }
   }
 

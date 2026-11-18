@@ -31,9 +31,8 @@ public class AuthMvcAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(LoginInterceptor.class)
     public LoginInterceptor m1kasaLoginInterceptor(
-            StringRedisTemplate stringRedisTemplate
     ) {
-        return new LoginInterceptor(stringRedisTemplate);
+        return new LoginInterceptor();
     }
 
     // 将拦截器注册到 MVC 请求处理流程

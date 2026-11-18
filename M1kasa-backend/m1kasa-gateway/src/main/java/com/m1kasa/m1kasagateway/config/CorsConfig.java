@@ -23,6 +23,7 @@ public class CorsConfig {
                 "http://127.0.0.1:5173"
 //                "http://127.0.0.1:8090"
         ));
+        config.setAllowCredentials(true);
         //允许的请求方法
         config.setAllowedMethods(List.of(
                 "GET", "HEAD", "POST", "PUT",

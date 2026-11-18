@@ -75,6 +75,17 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!--
+            Lettuce 连接池的必需依赖。
+            Spring Boot 的池化自动配置上有 @ConditionalOnClass(GenericObjectPool.class)，
+            缺少本依赖时 spring.data.redis.lettuce.pool.* 会被静默忽略，仍然只使用一条共享连接。
+            版本由 spring-boot-starter-parent 4.1.1 统一管理，不要手写 version。
+        -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>

@@ -31,6 +31,20 @@
             <artifactId>redisson</artifactId>
             <version>4.8.0</version>
         </dependency>
+        <dependency>
+            <groupId>com.m1kasa</groupId>
+            <artifactId>m1kasa-common-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.csp</groupId>
+            <artifactId>sentinel-parameter-flow-control</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+        </dependency>
     </dependencies>
 
 

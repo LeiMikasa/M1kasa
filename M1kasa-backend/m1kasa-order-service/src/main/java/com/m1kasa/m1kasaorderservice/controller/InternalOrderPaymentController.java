@@ -1,5 +1,6 @@
 package com.m1kasa.m1kasaorderservice.controller;
 
+import com.m1kasa.common.base.context.UserContext;
 import com.m1kasa.m1kasaorderservice.constant.OrderStatus;
 import com.m1kasa.m1kasaorderservice.service.OrderQueryService;
 import com.m1kasa.order.api.OrderPaymentInfoDTO;
@@ -28,10 +29,10 @@ public class InternalOrderPaymentController {
     @GetMapping("/{orderId}/payable")
     public OrderPaymentInfoDTO findPayable(
             @PathVariable("orderId") Long orderId,
-            @RequestParam("userId") Long userId,
             @RequestHeader(value = "X-Order-Payment-Token", required = false)
             String token
     ){
+        Long userId = UserContext.getUserId();
         if (!StringUtils.hasText(rpcToken)
                 || token == null
                 || !MessageDigest.isEqual(

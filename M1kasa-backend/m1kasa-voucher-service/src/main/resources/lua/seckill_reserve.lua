@@ -30,18 +30,6 @@ if not reservationKey or reservationKey == '' then
     return 5
 end
 
--- 已存在的凭证不能被覆盖
-if redis.call('EXISTS', reservationKey) == 1 then
-    return 5
-end
-
-
--- 提前检查待发送记录的类型，避免写入时发生 WRONGTYPE
-local outboxType = redis.call('TYPE', outboxKey).ok
-
-if outboxType ~= 'none' and outboxType ~= 'hash' then
-    return 5
-end
 -- 1.读取活动消息
 local activity = redis.call(
     'HMGET', activityKey,
@@ -87,7 +75,20 @@ if stock <= 0 then
     return 1
 end
 
--- 5. 扣减库存，并记录用户
+-- 5. 确认有资格后，在首次写入前校验相关键
+-- 已存在的凭证不能被覆盖
+if redis.call('EXISTS', reservationKey) == 1 then
+    return 5
+end
+
+-- 提前检查待发送记录的类型，避免写入时发生 WRONGTYPE
+local outboxType = redis.call('TYPE', outboxKey).ok
+
+if outboxType ~= 'none' and outboxType ~= 'hash' then
+    return 5
+end
+
+-- 6. 扣减库存，并记录用户
 -- 扣减库存
 redis.call('HINCRBY', activityKey, 'stock', -1)
 
@@ -95,7 +96,7 @@ redis.call('HINCRBY', activityKey, 'stock', -1)
 redis.call('SADD', buyersKey, userId)
 
 -- 保存待发送的下单消息记录
-redis.call('HSET', outboxKey, requestId, userId)
+--redis.call('HSET', outboxKey, requestId, userId)
 
 redis.call(
     'HSET',
