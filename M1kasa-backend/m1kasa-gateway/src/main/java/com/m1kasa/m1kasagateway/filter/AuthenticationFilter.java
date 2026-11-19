@@ -89,7 +89,7 @@ public class AuthenticationFilter implements GlobalFilter, Ordered {
         } catch (JwtException | IllegalArgumentException ex) {
             return unauthorized(cleanExchange);
         }
-        //网关同时检查jti和jti
+        //网关同时检查jti和sid
         List<String> revocationKeys=verified.sessionId()==null
                 ? List.of(verified.revocationKey())
                 : List.of(

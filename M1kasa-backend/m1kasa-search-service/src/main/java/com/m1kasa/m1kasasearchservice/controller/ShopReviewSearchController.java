@@ -36,7 +36,11 @@ public class ShopReviewSearchController {
             );
         }
 
-        return Result.ok(searchService.search(request.question().strip(), request.shopIds()));
+        return Result.ok(searchService.search(
+                request.question().strip(),
+                request.shopIds(),
+                request.keyword()
+        ));
     }
 
 

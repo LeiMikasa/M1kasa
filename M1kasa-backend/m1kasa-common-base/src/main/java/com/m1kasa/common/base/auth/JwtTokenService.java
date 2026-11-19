@@ -69,7 +69,7 @@ public final class JwtTokenService {
     //验证token并返回字段
     public VerifiedToken verify(String token) {
         Claims claims = parser.parseSignedClaims(token).getPayload();
-        String jti = claims.getId();
+        String jti = claims.getId();//一次jwt jti
         Date expiration = claims.getExpiration();
 
         if (jti == null || jti.isBlank() || expiration == null) {

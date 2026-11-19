@@ -111,16 +111,19 @@ public class ShopTools {
                 .map(type -> type.name() + "，分类 ID：" + type.id())
                 .collect(Collectors.joining("\n"));
     }
-
     @Tool(
             name = "searchNearbyShopReview",
-            description = "查询当前位置附近指定分类的店铺评论，适合回答口味，环境，排队和服务等问题"
+            description = "查询当前位置附近指定分类的店铺评论，适合回答口味、环境、排队和服务等问题"
     )
     public String searchNearbyShopReviews(
-        @ToolParam(description = "已知的店铺分类ID")long typeId,
-        @ToolParam(description = "用户关心的问题，例如上菜快不快")String question,
-        ToolContext context
-    ){
+            @ToolParam(description = "已知的店铺分类 ID") long typeId,
+            @ToolParam(description = "用户想了解的完整问题") String question,
+            @ToolParam(
+                    description = "可选。评论原文中可能出现且能明显缩小范围的具体短语。泛称或仅能匹配讨论对象时省略。",
+                    required = false
+            ) String keyword,
+            ToolContext context
+    ) {
         if (typeId<=0||question==null||question.isBlank()){
             return "请提供有效的店铺分类和想了解的问题";
         }
@@ -143,7 +146,7 @@ public class ShopTools {
             }
             List<Long> shopIds = nearby.data().stream().map(ShopDTO::id).toList();
             Result<List<ReviewHit>> reviews = reviewSearchClient.search(
-                    new ReviewSearchRequest(question, shopIds)
+                    new ReviewSearchRequest(question, shopIds, keyword)
             );
             if (reviews==null||!Boolean.TRUE.equals(reviews.success())
             || reviews.data()==null){
